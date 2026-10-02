@@ -11,7 +11,7 @@ plugin_description = (
 )
 plugin_author = "snake"
 plugin_author_email = "developer@octolink.local"
-plugin_url = "https://github.com/snake/OctoPrint-PrusaLink-Bridge"
+plugin_url = "https://github.com/Snake4you/OctoLink"
 plugin_license = "AGPLv3"
 
 plugin_requires = [
