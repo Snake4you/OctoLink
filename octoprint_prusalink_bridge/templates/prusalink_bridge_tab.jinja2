@@ -1,0 +1,147 @@
+<div id="tab_plugin_prusalink_bridge" class="tab-pane">
+    <div class="prusalink-tab-header clearfix">
+        <div class="pull-right">
+            <a data-bind="attr: {href: prusaLinkUrl}" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-small">
+                <i class="fa fa-external-link icon-external-link"></i> {{ _('PrusaLink WebUI öffnen') }}
+            </a>
+            <button class="btn btn-small" data-bind="click: requestData" title="{{ _('Aktualisieren') }}">
+                <i class="fa fa-refresh icon-refresh"></i>
+            </button>
+        </div>
+        <h3 style="margin-top: 0; margin-bottom: 5px;">
+            <i class="fa fa-print icon-print"></i>
+            <span data-bind="text: printerName">Prusa MK3.5</span>
+            <small data-bind="visible: isOnline">
+                (<span data-bind="text: prusaIp"></span>)
+            </small>
+            <span class="label" data-bind="css: stateClass, text: state" style="font-size: 14px; vertical-align: middle; margin-left: 10px;">OFFLINE</span>
+        </h3>
+    </div>
+
+    <hr style="margin: 10px 0 15px 0;">
+
+    <!-- Active / Last Job Card -->
+    <div class="well well-small prusalink-job-card" data-bind="visible: isOnline">
+        <h4 style="margin: 0 0 10px 0;">
+            <i class="fa fa-file-text-o icon-file-alt"></i> {{ _('Druckauftrag') }}:
+            <span data-bind="text: jobFile() || '{{ _('Kein aktiver Druck') }}'" style="font-weight: normal;"></span>
+        </h4>
+
+        <div class="progress progress-striped active" style="margin-bottom: 8px;" data-bind="visible: state() === 'PRINTING' || state() === 'PAUSED'">
+            <div class="bar bar-info" data-bind="style: {width: formatProgress()}"></div>
+        </div>
+
+        <div class="row-fluid text-center prusalink-metrics-row">
+            <div class="span3">
+                <div class="metric-box">
+                    <span class="metric-label">{{ _('Fortschritt') }}</span>
+                    <span class="metric-value" data-bind="text: formatProgress">0%</span>
+                </div>
+            </div>
+            <div class="span3">
+                <div class="metric-box">
+                    <span class="metric-label">{{ _('Verstrichene Zeit') }}</span>
+                    <span class="metric-value" data-bind="text: formatElapsed">--:--</span>
+                </div>
+            </div>
+            <div class="span3">
+                <div class="metric-box">
+                    <span class="metric-label">{{ _('Verbleibende Zeit') }}</span>
+                    <span class="metric-value" data-bind="text: formatRemaining">--:--</span>
+                </div>
+            </div>
+            <div class="span3">
+                <div class="metric-box">
+                    <span class="metric-label">{{ _('Z-Höhe') }}</span>
+                    <span class="metric-value" data-bind="text: formatZ">-</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="job-actions text-center" style="margin-top: 10px;" data-bind="visible: state() === 'PRINTING' || state() === 'PAUSED'">
+            <button class="btn btn-warning btn-small" data-bind="visible: state() === 'PRINTING', click: function() { sendJobCommand('pause'); }">
+                <i class="fa fa-pause icon-pause"></i> {{ _('Pausieren') }}
+            </button>
+            <button class="btn btn-success btn-small" data-bind="visible: state() === 'PAUSED', click: function() { sendJobCommand('resume'); }">
+                <i class="fa fa-play icon-play"></i> {{ _('Fortsetzen') }}
+            </button>
+            <button class="btn btn-danger btn-small" data-bind="click: function() { if (confirm('{{ _('Druck wirklich abbrechen?') }}')) sendJobCommand('cancel'); }">
+                <i class="fa fa-stop icon-stop"></i> {{ _('Abbrechen') }}
+            </button>
+        </div>
+    </div>
+
+    <!-- Live Telemetry Grid -->
+    <div class="row-fluid" data-bind="visible: isOnline">
+        <!-- Axes Coordinates -->
+        <div class="span4">
+            <div class="well well-small telemetry-card">
+                <h5><i class="fa fa-arrows icon-arrows"></i> {{ _('Achsen-Koordinaten') }}</h5>
+                <table class="table table-condensed table-striped" style="margin-bottom: 0;">
+                    <tbody>
+                        <tr>
+                            <td><strong>X:</strong></td>
+                            <td class="text-right"><span data-bind="text: axisX() !== null ? (axisX() + ' mm') : '-'"></span></td>
+                        </tr>
+                        <tr>
+                            <td><strong>Y:</strong></td>
+                            <td class="text-right"><span data-bind="text: axisY() !== null ? (axisY() + ' mm') : '-'"></span></td>
+                        </tr>
+                        <tr>
+                            <td><strong>Z:</strong></td>
+                            <td class="text-right"><strong><span data-bind="text: formatZ"></span></strong></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Fans & Cooling -->
+        <div class="span4">
+            <div class="well well-small telemetry-card">
+                <h5><i class="fa fa-asterisk icon-asterisk"></i> {{ _('Lüfter & Kühlung') }}</h5>
+                <table class="table table-condensed table-striped" style="margin-bottom: 0;">
+                    <tbody>
+                        <tr>
+                            <td><strong>{{ _('Hotend-Lüfter') }}:</strong></td>
+                            <td class="text-right">
+                                <span data-bind="text: fanHotend() !== null ? (fanHotend() + ' RPM') : '-'"></span>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td><strong>{{ _('Bauteil-Lüfter') }}:</strong></td>
+                            <td class="text-right">
+                                <span data-bind="text: fanPrint() !== null ? (fanPrint() + ' RPM') : '-'"></span>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Speed & Flow -->
+        <div class="span4">
+            <div class="well well-small telemetry-card">
+                <h5><i class="fa fa-dashboard icon-dashboard"></i> {{ _('Druckparameter') }}</h5>
+                <table class="table table-condensed table-striped" style="margin-bottom: 0;">
+                    <tbody>
+                        <tr>
+                            <td><strong>{{ _('Geschwindigkeit') }}:</strong></td>
+                            <td class="text-right"><span data-bind="text: (speed() !== null ? speed() : 100) + '%'"></span></td>
+                        </tr>
+                        <tr>
+                            <td><strong>{{ _('Materialfluss (Flow)') }}:</strong></td>
+                            <td class="text-right"><span data-bind="text: (flow() !== null ? flow() : 100) + '%'"></span></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Offline Message -->
+    <div class="alert alert-warning" data-bind="visible: !isOnline()">
+        <h4><i class="fa fa-exclamation-triangle icon-warning-sign"></i> {{ _('PrusaLink nicht erreichbar') }}</h4>
+        <p>{{ _('Es konnte keine Verbindung zu PrusaLink hergestellt werden. Bitte prüfe IP-Adresse und API-Key in den Einstellungen.') }}</p>
+    </div>
+</div>

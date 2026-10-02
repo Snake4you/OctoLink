@@ -1,0 +1,44 @@
+<div class="accordion-heading">
+    <a class="accordion-toggle" data-toggle="collapse" data-target="#sidebar_plugin_prusalink_bridge">
+        <i class="fa fa-print icon-print"></i> PrusaLink
+        <span class="label pull-right" data-bind="css: stateClass, text: state" style="margin-top: 1px;">OFFLINE</span>
+    </a>
+</div>
+<div id="sidebar_plugin_prusalink_bridge" class="accordion-body collapse in">
+    <div class="accordion-inner">
+        <div data-bind="visible: isOnline">
+            <table class="table table-condensed" style="margin-bottom: 5px; font-size: 12px;">
+                <tbody>
+                    <tr>
+                        <td><strong>{{ _('Status') }}:</strong></td>
+                        <td class="text-right"><span data-bind="text: state"></span></td>
+                    </tr>
+                    <tr>
+                        <td><strong>{{ _('Z-Höhe') }}:</strong></td>
+                        <td class="text-right"><strong><span data-bind="text: formatZ"></span></strong></td>
+                    </tr>
+                    <tr>
+                        <td><strong>{{ _('Hotend-Lüfter') }}:</strong></td>
+                        <td class="text-right"><span data-bind="text: fanHotend() !== null ? (fanHotend() + ' RPM') : '-'"></span></td>
+                    </tr>
+                    <tr>
+                        <td><strong>{{ _('Bauteil-Lüfter') }}:</strong></td>
+                        <td class="text-right"><span data-bind="text: fanPrint() !== null ? (fanPrint() + ' RPM') : '-'"></span></td>
+                    </tr>
+                    <tr>
+                        <td><strong>{{ _('Speed / Flow') }}:</strong></td>
+                        <td class="text-right"><span data-bind="text: (speed() || 100) + '% / ' + (flow() || 100) + '%'"></span></td>
+                    </tr>
+                </tbody>
+            </table>
+            <div style="margin-top: 6px;">
+                <a data-bind="attr: {href: prusaLinkUrl}" target="_blank" rel="noopener noreferrer" class="btn btn-mini btn-block">
+                    <i class="fa fa-external-link icon-external-link"></i> {{ _('PrusaLink öffnen') }}
+                </a>
+            </div>
+        </div>
+        <div data-bind="visible: !isOnline()">
+            <small class="text-muted"><i class="fa fa-unlink icon-unlink"></i> {{ _('PrusaLink offline') }}</small>
+        </div>
+    </div>
+</div>

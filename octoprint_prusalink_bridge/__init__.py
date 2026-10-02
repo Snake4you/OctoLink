@@ -2,6 +2,7 @@
 from __future__ import absolute_import
 
 import logging
+import re
 import threading
 import time
 from typing import Any, Dict, Optional, Tuple
@@ -242,6 +243,33 @@ class PrusaLinkBridgePlugin(*_PluginBases):
         # Temperature tracking
         self._current_temps = {}
 
+        # Z axis tracking
+        self._current_axis_z = None
+
+        # Telemetry data dictionary for UI & API
+        self._prusalink_info = {
+            "online": False,
+            "state": "OFFLINE",
+            "temp_nozzle": None,
+            "target_nozzle": None,
+            "temp_bed": None,
+            "target_bed": None,
+            "axis_x": None,
+            "axis_y": None,
+            "axis_z": None,
+            "flow": None,
+            "speed": None,
+            "fan_hotend": None,
+            "fan_print": None,
+            "job_file": None,
+            "progress": None,
+            "time_printing": None,
+            "time_remaining": None,
+            "prusa_ip": None,
+            "printer_name": "Prusa 3D Drucker",
+        }
+        self._prusa_model_name = "Prusa 3D Drucker"
+
         # Saved original printer methods for clean unwrap
         self._orig_printer_methods = {}
 
@@ -276,8 +304,20 @@ class PrusaLinkBridgePlugin(*_PluginBases):
                 "type": "settings",
                 "name": "PrusaLink Bridge",
                 "template": "prusalink_bridge_settings.jinja2",
-                "custom_bindings": False,
-            }
+                "custom_bindings": True,
+            },
+            {
+                "type": "tab",
+                "name": "PrusaLink",
+                "template": "prusalink_bridge_tab.jinja2",
+                "custom_bindings": True,
+            },
+            {
+                "type": "sidebar",
+                "name": "PrusaLink",
+                "template": "prusalink_bridge_sidebar.jinja2",
+                "custom_bindings": True,
+            },
         ]
 
     # ~~ AssetPlugin mixin
@@ -334,6 +374,14 @@ class PrusaLinkBridgePlugin(*_PluginBases):
             return flask.jsonify({"success": success, "message": msg})
 
         return flask.jsonify({"error": "Unbekannter Befehl"}), 400
+
+    def on_api_get(self, request):
+        import flask
+        info = dict(getattr(self, "_prusalink_info", {}))
+        return flask.jsonify(info)
+
+    def is_api_protected(self):
+        return False
 
     # ~~ StartupPlugin & ShutdownPlugin mixins
 
@@ -441,12 +489,41 @@ class PrusaLinkBridgePlugin(*_PluginBases):
         if bed_target is None:
             bed_target = telemetry_fallback.get("target-bed", 0.0)
 
+        axis_z = printer_data.get("axis_z")
+        if axis_z is None:
+            axis_z = telemetry_fallback.get("axis-z")
+
+        axis_x = printer_data.get("axis_x")
+        if axis_x is None:
+            axis_x = telemetry_fallback.get("axis-x")
+
+        axis_y = printer_data.get("axis_y")
+        if axis_y is None:
+            axis_y = telemetry_fallback.get("axis-y")
+
+        flow = printer_data.get("flow")
+        speed = printer_data.get("speed")
+        fan_hotend = printer_data.get("fan_hotend")
+        fan_print = printer_data.get("fan_print")
+
         telemetry_dict = {
             "temp_nozzle": nozzle_actual,
             "target_nozzle": nozzle_target,
             "temp_bed": bed_actual,
             "target_bed": bed_target,
+            "axis_x": axis_x,
+            "axis_y": axis_y,
+            "axis_z": axis_z,
+            "flow": flow,
+            "speed": speed,
+            "fan_hotend": fan_hotend,
+            "fan_print": fan_print,
         }
+        if axis_z is not None:
+            try:
+                telemetry_dict["axis_z"] = float(axis_z)
+            except (ValueError, TypeError):
+                pass
 
         # 2. GET /api/v1/job for detailed print job information
         job_data = {}
@@ -460,8 +537,44 @@ class PrusaLinkBridgePlugin(*_PluginBases):
                 if isinstance(job_in_status, dict):
                     job_data = job_in_status
 
+        # Retrieve model name once
+        if getattr(self, "_prusa_model_name", None) in (None, "Prusa 3D Drucker"):
+            info_ok, info_resp, _ = self._client.get_info(ip, api_key, timeout=2.0)
+            if info_ok and isinstance(info_resp, dict):
+                self._prusa_model_name = info_resp.get("name") or info_resp.get("hostname") or "Prusa MK3.5S"
+
         # Synchronize into OctoPrint
         self._sync_to_octoprint(state_str, job_data, telemetry_dict)
+
+        # Update telemetry data dictionary for UI and API
+        is_printing = (state_str == "PRINTING")
+        is_paused = (state_str == "PAUSED")
+        self._prusalink_info = {
+            "online": True,
+            "state": state_str,
+            "temp_nozzle": nozzle_actual,
+            "target_nozzle": nozzle_target,
+            "temp_bed": bed_actual,
+            "target_bed": bed_target,
+            "axis_x": axis_x,
+            "axis_y": axis_y,
+            "axis_z": self._current_axis_z,
+            "flow": flow,
+            "speed": speed,
+            "fan_hotend": fan_hotend,
+            "fan_print": fan_print,
+            "job_file": self._current_job_file if (is_printing or is_paused) else None,
+            "progress": self._current_progress if (is_printing or is_paused) else None,
+            "time_printing": self._current_time_printing if (is_printing or is_paused) else None,
+            "time_remaining": self._current_time_remaining if (is_printing or is_paused) else None,
+            "prusa_ip": ip,
+            "printer_name": getattr(self, "_prusa_model_name", "Prusa 3D Drucker"),
+        }
+        if hasattr(self, "_plugin_manager") and self._plugin_manager is not None:
+            try:
+                self._plugin_manager.send_plugin_message(self._identifier, self._prusalink_info)
+            except Exception as e:
+                self._logger.debug(f"Error sending plugin message: {e}")
 
     def _handle_disconnected(self):
         was_online = self._prusalink_online
@@ -472,6 +585,33 @@ class PrusaLinkBridgePlugin(*_PluginBases):
             self._logger.info("PrusaLink went offline during print mirroring")
             self._is_prusalink_printing = False
             self._is_prusalink_paused = False
+
+        self._prusalink_info = {
+            "online": False,
+            "state": "OFFLINE",
+            "temp_nozzle": None,
+            "target_nozzle": None,
+            "temp_bed": None,
+            "target_bed": None,
+            "axis_x": None,
+            "axis_y": None,
+            "axis_z": None,
+            "flow": None,
+            "speed": None,
+            "fan_hotend": None,
+            "fan_print": None,
+            "job_file": None,
+            "progress": None,
+            "time_printing": None,
+            "time_remaining": None,
+            "prusa_ip": None,
+            "printer_name": getattr(self, "_prusa_model_name", "Prusa 3D Drucker"),
+        }
+        if hasattr(self, "_plugin_manager") and self._plugin_manager is not None:
+            try:
+                self._plugin_manager.send_plugin_message(self._identifier, self._prusalink_info)
+            except Exception as e:
+                self._logger.debug(f"Error sending plugin message: {e}")
 
     def _sync_to_octoprint(self, state_str: str, job_data: Dict[str, Any], telemetry_data: Dict[str, Any]):
         if not hasattr(self, "_printer") or self._printer is None:
@@ -515,35 +655,35 @@ class PrusaLinkBridgePlugin(*_PluginBases):
         state_monitor = getattr(self._printer, "_stateMonitor", None)
         if state_monitor is not None:
             try:
-                flags = dict_cls(
-                    operational=True,
-                    printing=is_printing,
-                    cancelling=False,
-                    pausing=False,
-                    resuming=False,
-                    finishing=False,
-                    closedOrError=False,
-                    error=False,
-                    paused=is_paused,
-                    ready=(not is_printing and not is_paused),
-                    sdReady=True,
-                )
-                state_text = "Printing" if is_printing else ("Paused" if is_paused else "Operational")
-                state_dict = dict_cls(
-                    text=state_text,
-                    flags=flags,
-                    error="",
-                )
-                state_monitor.set_state(state_dict)
-
                 if is_printing or is_paused:
+                    flags = dict_cls(
+                        operational=True,
+                        printing=is_printing,
+                        cancelling=False,
+                        pausing=False,
+                        resuming=False,
+                        finishing=False,
+                        closedOrError=False,
+                        error=False,
+                        paused=is_paused,
+                        ready=False,
+                        sdReady=True,
+                    )
+                    state_text = "Printing" if is_printing else "Paused"
+                    state_dict = dict_cls(
+                        text=state_text,
+                        flags=flags,
+                        error="",
+                    )
+                    state_monitor.set_state(state_dict)
+
                     estimated_time = (time_printing + time_remaining) if time_remaining is not None else None
                     job_dict = dict_cls(
                         file=dict_cls(
                             name=filename,
                             path=filename,
                             size=filesize,
-                            origin="sdcard",
+                            origin="local",
                             date=int(time.time()),
                         ),
                         estimatedPrintTime=estimated_time,
@@ -563,17 +703,9 @@ class PrusaLinkBridgePlugin(*_PluginBases):
                         )
                         state_monitor.set_progress(prog_dict)
 
-                elif state_str in ("FINISHED", "IDLE", "STOPPED", "READY"):
-                    if state_str == "FINISHED" and progress is not None:
-                        prog_dict = dict_cls(
-                            completion=100.0,
-                            filepos=None,
-                            printTime=int(time_printing),
-                            printTimeLeft=0,
-                            printTimeLeftOrigin="estimate",
-                        )
-                        state_monitor.set_progress(prog_dict)
-                    else:
+                elif was_printing or was_paused or state_str in ("FINISHED", "IDLE", "READY", "STOPPED"):
+                    if not is_printing and not is_paused:
+                        # Reset job data when returning from printing to idle
                         reset_job = dict_cls(
                             file=dict_cls(name=None, path=None, size=None, origin=None, date=None),
                             estimatedPrintTime=None,
@@ -590,10 +722,104 @@ class PrusaLinkBridgePlugin(*_PluginBases):
                             printTimeLeftOrigin=None,
                         )
                         state_monitor.set_progress(reset_prog)
+
+                        is_op = True
+                        orig_is_op = getattr(self._printer, "is_operational", lambda: True)
+                        try:
+                            is_op = orig_is_op()
+                        except Exception:
+                            pass
+
+                        if is_op:
+                            flags = dict_cls(
+                                operational=True,
+                                printing=False,
+                                cancelling=False,
+                                pausing=False,
+                                resuming=False,
+                                finishing=False,
+                                closedOrError=False,
+                                error=False,
+                                paused=False,
+                                ready=True,
+                                sdReady=True,
+                            )
+                            state_dict = dict_cls(
+                                text="Operational",
+                                flags=flags,
+                                error="",
+                            )
+                            state_monitor.set_state(state_dict)
+
+                        # If serial comm is in STATE_PRINTING_FROM_SD or STATE_PRINTING, transition back to Operational
+                        comm = getattr(self._printer, "_comm", None)
+                        if comm is not None:
+                            try:
+                                if hasattr(comm, "_sdPrintingFile") and comm._sdPrintingFile is not None:
+                                    comm._sdPrintingFile = None
+                                if (hasattr(comm, "isSdPrinting") and comm.isSdPrinting()) or (hasattr(comm, "isPrinting") and comm.isPrinting()):
+                                    comm._changeState(comm.STATE_OPERATIONAL)
+                            except Exception as e:
+                                self._logger.debug(f"Error resetting comm state: {e}")
             except Exception as e:
                 self._logger.debug(f"Error updating StateMonitor: {e}")
 
-        # 2. Fire OctoPrint Events for plugins like Obico
+        # 2. Update Z axis if reported by PrusaLink
+        axis_z = telemetry_data.get("axis_z")
+        if axis_z is not None:
+            self._current_axis_z = axis_z
+            set_z_method = getattr(self._printer, "_setCurrentZ", None)
+            if set_z_method is not None:
+                try:
+                    set_z_method(axis_z)
+                except Exception as e:
+                    self._logger.debug(f"Error calling _setCurrentZ: {e}")
+            elif state_monitor is not None and hasattr(state_monitor, "set_current_z"):
+                try:
+                    state_monitor.set_current_z(axis_z)
+                except Exception as e:
+                    self._logger.debug(f"Error calling set_current_z on StateMonitor: {e}")
+        elif not is_printing and not is_paused:
+            self._current_axis_z = None
+
+        # 3. Synchronize Obico print job tracker (for layer height and real elapsed time)
+        if hasattr(self, "_plugin_manager") and self._plugin_manager is not None:
+            try:
+                obico_plugin = self._plugin_manager.get_plugin("obico")
+                if obico_plugin and hasattr(obico_plugin, "implementation"):
+                    tracker = getattr(obico_plugin.implementation, "_print_job_tracker", None)
+                    if tracker is not None:
+                        # Sync start timestamp so Obico displays the real elapsed time
+                        if is_printing and time_printing and getattr(tracker, "current_print_ts", -1) > 0:
+                            expected_start_ts = int(time.time()) - int(time_printing)
+                            if abs(tracker.current_print_ts - expected_start_ts) > 10:
+                                tracker.current_print_ts = expected_start_ts
+
+                        # Sync current layer height / layer number
+                        if axis_z is not None:
+                            layer_height = 0.2
+                            if filename:
+                                match = re.search(r"([0-9.]+)\s*mm", filename, re.IGNORECASE)
+                                if match:
+                                    try:
+                                        lh = float(match.group(1))
+                                        if 0.05 <= lh <= 0.8:
+                                            layer_height = lh
+                                    except ValueError:
+                                        pass
+                            current_layer = max(1, int(round(axis_z / layer_height)))
+                            tracker.current_layer_height = current_layer
+
+                            if progress and progress > 0:
+                                total_layers = max(current_layer, int(round(current_layer / (float(progress) / 100.0))))
+                                if getattr(tracker, "_file_metadata_cache", None) is None:
+                                    tracker._file_metadata_cache = {}
+                                if isinstance(tracker._file_metadata_cache, dict):
+                                    tracker._file_metadata_cache.setdefault("obico", {})["totalLayerCount"] = total_layers
+            except Exception as e:
+                self._logger.debug(f"Error syncing with Obico tracker: {e}")
+
+        # 4. Fire OctoPrint Events for plugins like Obico
         event_bus = getattr(self, "_event_bus", None)
         if event_bus is not None and Events is not None:
             try:
@@ -601,7 +827,7 @@ class PrusaLinkBridgePlugin(*_PluginBases):
                     self._logger.info(f"Firing OctoPrint event: PRINT_STARTED ('{filename}')")
                     event_bus.fire(
                         Events.PRINT_STARTED,
-                        {"name": filename, "path": filename, "origin": "sdcard", "size": filesize},
+                        {"name": filename, "path": filename, "origin": "local", "size": filesize},
                     )
                 elif is_paused and not was_paused and was_printing:
                     self._logger.info("Firing OctoPrint event: PRINT_PAUSED")
@@ -613,7 +839,7 @@ class PrusaLinkBridgePlugin(*_PluginBases):
                     self._logger.info(f"Firing OctoPrint event: PRINT_DONE ('{filename}')")
                     event_bus.fire(
                         Events.PRINT_DONE,
-                        {"name": filename, "path": filename, "origin": "sdcard", "time": time_printing},
+                        {"name": filename, "path": filename, "origin": "local", "time": time_printing},
                     )
                 elif state_str == "STOPPED" and (was_printing or was_paused):
                     self._logger.info("Firing OctoPrint event: PRINT_CANCELLED")
@@ -756,6 +982,7 @@ class PrusaLinkBridgePlugin(*_PluginBases):
         orig_pause_print = self._printer.pause_print
         orig_cancel_print = self._printer.cancel_print
         orig_resume_print = getattr(self._printer, "resume_print", None)
+        orig_update_progress_data = getattr(self._printer, "_updateProgressData", None)
         orig_get_current_data = self._printer.get_current_data
         orig_get_current_temperatures = self._printer.get_current_temperatures
 
@@ -764,6 +991,8 @@ class PrusaLinkBridgePlugin(*_PluginBases):
         def wrapped_is_printing(*args, **kwargs):
             if plugin._is_prusalink_printing:
                 return True
+            if plugin._prusalink_online and plugin._prusalink_state in ("FINISHED", "IDLE", "READY", "STOPPED"):
+                return False
             return orig_is_printing(*args, **kwargs)
 
         def wrapped_is_paused(*args, **kwargs):
@@ -772,7 +1001,7 @@ class PrusaLinkBridgePlugin(*_PluginBases):
             return orig_is_paused(*args, **kwargs)
 
         def wrapped_is_operational(*args, **kwargs):
-            if plugin._prusalink_online:
+            if plugin._is_prusalink_printing or plugin._is_prusalink_paused:
                 return True
             return orig_is_operational(*args, **kwargs)
 
@@ -781,8 +1010,11 @@ class PrusaLinkBridgePlugin(*_PluginBases):
                 return "Printing"
             elif plugin._is_prusalink_paused:
                 return "Paused"
-            elif plugin._prusalink_online and not orig_is_operational(*args, **kwargs):
-                return "Operational"
+            if plugin._prusalink_online and plugin._prusalink_state in ("FINISHED", "IDLE", "READY", "STOPPED"):
+                base_str = orig_get_state_string(*args, **kwargs)
+                if base_str in ("Printing", "Printing from SD"):
+                    return "Operational"
+                return base_str
             return orig_get_state_string(*args, **kwargs)
 
         def wrapped_get_state_id(*args, **kwargs):
@@ -790,13 +1022,16 @@ class PrusaLinkBridgePlugin(*_PluginBases):
                 return "PRINTING"
             elif plugin._is_prusalink_paused:
                 return "PAUSED"
-            elif plugin._prusalink_online and not orig_is_operational(*args, **kwargs):
-                return "OPERATIONAL"
+            if plugin._prusalink_online and plugin._prusalink_state in ("FINISHED", "IDLE", "READY", "STOPPED"):
+                base_id = orig_get_state_id(*args, **kwargs)
+                if base_id in ("PRINTING", "PRINTING_FROM_SD"):
+                    return "OPERATIONAL"
+                return base_id
             return orig_get_state_id(*args, **kwargs)
 
         def wrapped_pause_print(user=None, *args, **kwargs):
             plugin._logger.info("pause_print invoked on PrinterInterface")
-            if plugin._is_prusalink_printing or plugin._is_prusalink_paused or plugin._prusalink_online:
+            if plugin._is_prusalink_printing or plugin._is_prusalink_paused:
                 plugin.send_prusalink_command("pause")
             try:
                 return orig_pause_print(user=user, *args, **kwargs)
@@ -805,7 +1040,7 @@ class PrusaLinkBridgePlugin(*_PluginBases):
 
         def wrapped_cancel_print(user=None, *args, **kwargs):
             plugin._logger.info("cancel_print invoked on PrinterInterface")
-            if plugin._is_prusalink_printing or plugin._is_prusalink_paused or plugin._prusalink_online:
+            if plugin._is_prusalink_printing or plugin._is_prusalink_paused:
                 plugin.send_prusalink_command("cancel")
             try:
                 return orig_cancel_print(user=user, *args, **kwargs)
@@ -814,13 +1049,41 @@ class PrusaLinkBridgePlugin(*_PluginBases):
 
         def wrapped_resume_print(user=None, *args, **kwargs):
             plugin._logger.info("resume_print invoked on PrinterInterface")
-            if plugin._is_prusalink_paused or plugin._prusalink_online:
+            if plugin._is_prusalink_paused:
                 plugin.send_prusalink_command("resume")
             if orig_resume_print is not None:
                 try:
                     return orig_resume_print(user=user, *args, **kwargs)
                 except Exception as e:
                     plugin._logger.debug(f"Original resume_print raised: {e}")
+
+        def wrapped_update_progress_data(
+            completion=None,
+            filepos=None,
+            printTime=None,
+            printTimeLeft=None,
+            printTimeLeftOrigin=None,
+            *args,
+            **kwargs,
+        ):
+            if plugin._is_prusalink_printing:
+                if plugin._current_progress is not None:
+                    completion = plugin._current_progress / 100.0
+                if plugin._current_time_printing is not None:
+                    printTime = int(plugin._current_time_printing)
+                if plugin._current_time_remaining is not None:
+                    printTimeLeft = int(plugin._current_time_remaining)
+                    printTimeLeftOrigin = "estimate"
+            if orig_update_progress_data is not None:
+                return orig_update_progress_data(
+                    completion=completion,
+                    filepos=filepos,
+                    printTime=printTime,
+                    printTimeLeft=printTimeLeft,
+                    printTimeLeftOrigin=printTimeLeftOrigin,
+                    *args,
+                    **kwargs,
+                )
 
         def wrapped_get_current_data(*args, **kwargs):
             data = orig_get_current_data(*args, **kwargs)
@@ -848,9 +1111,24 @@ class PrusaLinkBridgePlugin(*_PluginBases):
                         job_d = dict(data["job"])
                         file_d = dict(job_d.get("file", {}))
                         file_d["name"] = plugin._current_job_file
-                        file_d["origin"] = "sdcard"
+                        file_d["origin"] = "local"
                         job_d["file"] = file_d
                         data["job"] = job_d
+
+                    if plugin._current_axis_z is not None:
+                        data["currentZ"] = plugin._current_axis_z
+            elif plugin._prusalink_online and plugin._prusalink_state in ("FINISHED", "IDLE", "READY", "STOPPED"):
+                if isinstance(data, dict):
+                    data = dict(data)
+                    st = dict(data.get("state", {}))
+                    flags = dict(st.get("flags", {}))
+                    if flags.get("printing"):
+                        flags["printing"] = False
+                        flags["ready"] = True
+                        st["flags"] = flags
+                        if st.get("text") in ("Printing", "Printing from SD"):
+                            st["text"] = "Operational"
+                        data["state"] = st
             return data
 
         def wrapped_get_current_temperatures(*args, **kwargs):
@@ -875,6 +1153,8 @@ class PrusaLinkBridgePlugin(*_PluginBases):
         }
         if orig_resume_print is not None:
             self._orig_printer_methods["resume_print"] = orig_resume_print
+        if orig_update_progress_data is not None:
+            self._orig_printer_methods["_updateProgressData"] = orig_update_progress_data
 
         # Apply wrappers
         self._printer.is_printing = wrapped_is_printing
@@ -885,6 +1165,8 @@ class PrusaLinkBridgePlugin(*_PluginBases):
         self._printer.pause_print = wrapped_pause_print
         self._printer.cancel_print = wrapped_cancel_print
         self._printer.resume_print = wrapped_resume_print
+        if orig_update_progress_data is not None:
+            self._printer._updateProgressData = wrapped_update_progress_data
         self._printer.get_current_data = wrapped_get_current_data
         self._printer.get_current_temperatures = wrapped_get_current_temperatures
         self._logger.info("PrinterInterface methods successfully wrapped for PrusaLink mirroring")

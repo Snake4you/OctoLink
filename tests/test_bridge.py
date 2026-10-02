@@ -1,4 +1,5 @@
 # coding=utf-8
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 import requests
@@ -178,6 +179,18 @@ class DummyPrinter:
     def get_current_temperatures(self, *args, **kwargs):
         return {}
 
+    def _setCurrentZ(self, z):
+        self._currentZ = z
+
+    def _updateProgressData(self, completion=None, filepos=None, printTime=None, printTimeLeft=None, printTimeLeftOrigin=None):
+        self._last_progress = {
+            "completion": completion,
+            "filepos": filepos,
+            "printTime": printTime,
+            "printTimeLeft": printTimeLeft,
+            "printTimeLeftOrigin": printTimeLeftOrigin,
+        }
+
 
 class TestPrusaLinkBridgePlugin(unittest.TestCase):
     def setUp(self):
@@ -340,6 +353,151 @@ class TestPrusaLinkBridgePlugin(unittest.TestCase):
         self.assertTrue(data["prusalink_bridge"]["printing"])
         self.assertEqual(data["prusalink_bridge"]["job_id"], 42)
 
+    def test_idle_preserves_serial_state(self):
+        # PrusaLink is online but printer is idle
+        self.plugin._prusalink_online = True
+        self.plugin._is_prusalink_printing = False
+        self.plugin._is_prusalink_paused = False
+
+        # When serial is disconnected
+        self.plugin._printer._operational = False
+        self.plugin._printer._state_str = "Closed"
+        self.plugin._printer._state_id = "CLOSED"
+
+        self.assertFalse(self.plugin._printer.is_operational())
+        self.assertEqual(self.plugin._printer.get_state_string(), "Closed")
+        self.assertEqual(self.plugin._printer.get_state_id(), "CLOSED")
+
+        # When serial is connected
+        self.plugin._printer._operational = True
+        self.plugin._printer._state_str = "Operational"
+        self.plugin._printer._state_id = "OPERATIONAL"
+
+        self.assertTrue(self.plugin._printer.is_operational())
+        self.assertEqual(self.plugin._printer.get_state_string(), "Operational")
+        self.assertEqual(self.plugin._printer.get_state_id(), "OPERATIONAL")
+
+    def test_cancel_idle_does_not_forward_to_prusalink(self):
+        self.plugin._is_prusalink_printing = False
+        self.plugin._is_prusalink_paused = False
+        with patch.object(self.plugin, "send_prusalink_command") as mock_send_cmd:
+            self.plugin._printer.cancel_print()
+            mock_send_cmd.assert_not_called()
+
+    def test_z_axis_and_progress_wrap(self):
+        # 1. Test status with axis_z
+        status_data = {
+            "printer": {"state": "PRINTING", "temp_nozzle": 215.0, "temp_bed": 60.0, "axis_z": 12.4},
+            "job": {"id": 105, "progress": 50.0, "time_printing": 600, "time_remaining": 600, "file": {"display_name": "test_0.2mm.gcode"}},
+        }
+        with patch.object(self.plugin._client, "get_status", return_value=(True, status_data, "")), \
+             patch.object(self.plugin._client, "get_job", return_value=(True, status_data["job"], "")):
+            self.plugin._poll_prusalink("192.168.1.120", "test_api_key")
+
+        self.assertEqual(self.plugin._current_axis_z, 12.4)
+        self.assertEqual(self.plugin._printer._currentZ, 12.4)
+
+        data = self.plugin._printer.get_current_data()
+        self.assertEqual(data.get("currentZ"), 12.4)
+
+        # 2. Test progress wrap overrides inaccurate comm timer
+        self.plugin._printer._updateProgressData(completion=0.1, filepos=100, printTime=100, printTimeLeft=900)
+        self.assertEqual(self.plugin._printer._last_progress["printTime"], 600)
+        self.assertEqual(self.plugin._printer._last_progress["printTimeLeft"], 600)
+        self.assertEqual(self.plugin._printer._last_progress["completion"], 0.5)
+
+    def test_obico_sync(self):
+        # Mock Obico plugin
+        mock_obico = MagicMock()
+        mock_tracker = MagicMock()
+        mock_tracker.current_print_ts = int(time.time()) # Set mid-print
+        mock_tracker._file_metadata_cache = {}
+        mock_obico.implementation._print_job_tracker = mock_tracker
+
+        self.plugin._plugin_manager = MagicMock()
+        self.plugin._plugin_manager.get_plugin.return_value = mock_obico
+
+        status_data = {
+            "printer": {"state": "PRINTING", "temp_nozzle": 215.0, "temp_bed": 60.0, "axis_z": 10.0},
+            "job": {"id": 106, "progress": 50.0, "time_printing": 1000, "time_remaining": 1000, "file": {"display_name": "model_0.2mm.gcode"}},
+        }
+        with patch.object(self.plugin._client, "get_status", return_value=(True, status_data, "")), \
+             patch.object(self.plugin._client, "get_job", return_value=(True, status_data["job"], "")):
+            self.plugin._poll_prusalink("192.168.1.120", "test_api_key")
+
+        # Layer 10.0mm / 0.2mm = 50
+        self.assertEqual(mock_tracker.current_layer_height, 50)
+        # Expected start timestamp = now - 1000
+        self.assertAlmostEqual(mock_tracker.current_print_ts, int(time.time()) - 1000, delta=5)
+
+    def test_finished_state_clears_printing_flags(self):
+        # Simulate printer serial stuck in Printing
+        self.plugin._printer._state_str = "Printing"
+        self.plugin._printer._state_id = "PRINTING"
+        self.plugin._printer._printing = True
+
+        status_data = {
+            "printer": {
+                "state": "FINISHED",
+                "temp_nozzle": 65.0,
+                "temp_bed": 40.0,
+                "axis_z": 76.7,
+                "axis_x": 241.0,
+                "axis_y": 201.0,
+                "flow": 100,
+                "speed": 100,
+                "fan_hotend": 4000,
+                "fan_print": 0,
+            },
+        }
+        with patch.object(self.plugin._client, "get_status", return_value=(True, status_data, "")), \
+             patch.object(self.plugin._client, "get_job", return_value=(True, None, "")):
+            self.plugin._poll_prusalink("192.168.1.120", "test_api_key")
+
+        self.assertFalse(self.plugin._printer.is_printing())
+        self.assertEqual(self.plugin._printer.get_state_string(), "Operational")
+        self.assertEqual(self.plugin._printer.get_state_id(), "OPERATIONAL")
+        current_data = self.plugin._printer.get_current_data()
+        self.assertFalse(current_data["state"]["flags"]["printing"])
+        self.assertEqual(current_data["state"]["text"], "Operational")
+
+    def test_telemetry_and_template_configs(self):
+        # Verify template configurations include tab and sidebar
+        configs = self.plugin.get_template_configs()
+        types = [c.get("type") for c in configs]
+        self.assertIn("settings", types)
+        self.assertIn("tab", types)
+        self.assertIn("sidebar", types)
+
+        # Verify telemetry dictionary populated
+        status_data = {
+            "printer": {
+                "state": "IDLE",
+                "temp_nozzle": 25.0,
+                "temp_bed": 22.0,
+                "axis_z": 0.0,
+                "axis_x": 10.0,
+                "axis_y": 20.0,
+                "flow": 100,
+                "speed": 100,
+                "fan_hotend": 0,
+                "fan_print": 0,
+            },
+        }
+        with patch.object(self.plugin._client, "get_status", return_value=(True, status_data, "")), \
+             patch.object(self.plugin._client, "get_job", return_value=(True, None, "")):
+            self.plugin._poll_prusalink("192.168.1.120", "test_api_key")
+
+        info = self.plugin._prusalink_info
+        self.assertTrue(info["online"])
+        self.assertEqual(info["state"], "IDLE")
+        self.assertEqual(info["axis_x"], 10.0)
+        self.assertEqual(info["axis_y"], 20.0)
+        self.assertEqual(info["fan_hotend"], 0)
+        self.assertEqual(info["speed"], 100)
+
 
 if __name__ == "__main__":
     unittest.main()
+
+

@@ -23,3 +23,59 @@
 #settings_plugin_prusalink_bridge .text-info {
     color: #3a87ad;
 }
+
+/* Tab and Dashboard styling */
+.prusalink-tab-header {
+    margin-bottom: 15px;
+}
+
+.prusalink-job-card {
+    background-color: #fcfcfc;
+    border: 1px solid #e3e3e3;
+    border-radius: 4px;
+    padding: 15px;
+    margin-bottom: 20px;
+}
+
+.prusalink-metrics-row .metric-box {
+    padding: 8px 5px;
+    background: #f7f7f9;
+    border: 1px solid #e1e1e8;
+    border-radius: 4px;
+}
+
+.prusalink-metrics-row .metric-label {
+    display: block;
+    font-size: 11px;
+    color: #777;
+    text-transform: uppercase;
+}
+
+.prusalink-metrics-row .metric-value {
+    display: block;
+    font-size: 16px;
+    font-weight: bold;
+    color: #333;
+    margin-top: 4px;
+}
+
+.telemetry-card {
+    background-color: #ffffff;
+    border: 1px solid #e3e3e3;
+    min-height: 140px;
+}
+
+.telemetry-card h5 {
+    margin-top: 0;
+    margin-bottom: 10px;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 5px;
+}
+
+.telemetry-card td.text-right {
+    text-align: right;
+}
+
+#prusalink_dashboard_widget {
+    margin-bottom: 15px;
+}
