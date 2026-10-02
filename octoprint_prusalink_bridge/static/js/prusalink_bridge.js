@@ -260,7 +260,7 @@ $(function() {
             });
         };
 
-        self.onAfterBinding = function() {
+        self.onAllBound = function(allViewModels) {
             self.injectIntoDashboardPlugin();
         };
 
@@ -289,8 +289,11 @@ $(function() {
                 var widgetEl = document.getElementById("prusalink_dashboard_widget");
                 if (widgetEl) {
                     try {
+                        ko.cleanNode(widgetEl);
                         ko.applyBindings(self, widgetEl);
-                    } catch(e) {}
+                    } catch(e) {
+                        console.warn("[PrusaLinkBridge] Failed to bind dashboard widget:", e);
+                    }
                 }
             }
         };
