@@ -120,6 +120,7 @@ Navigate to **OctoPrint Settings > PrusaLink Bridge**:
 | **PrusaLink API-Key** | Password | *empty* | API key found in the printer menu (**Settings > Network > PrusaLink**). |
 | **Polling Interval** | Float | `2.0` | Refresh interval in seconds (between 0.5 and 60.0). |
 | **Mirror Temperatures** | Boolean | `True` | Update hotend and bed temperatures in OctoPrint graphs. |
+| **Obico NozzleCam Support** | Boolean | `True` | Automatically triggers Obico's First Layer AI (Nozzle Ninja) using telemetry Z-height. |
 
 > 💡 **Connection Test:** Click the **"Test Connection"** button in the settings panel to verify IP reachability, authentication, and printer response before saving.
 
@@ -134,7 +135,10 @@ When using **Obico (The Spaghetti Detective)** alongside OctoLink:
    - `Events.PRINT_PROGRESS`
    - `Events.PRINT_PAUSED` / `Events.PRINT_RESUMED`
    - `Events.PRINT_DONE` / `Events.PRINT_FAILED` / `Events.PRINT_CANCELLED`
-3. **Automated Interventions:** If Obico's AI detects a print failure (spaghetti, detachment, layer shift) and commands a pause or cancel, OctoLink intercepts `printer.pause_print()` or `printer.cancel_print()` and sends:
+3. **NozzleCam / First Layer AI (Nozzle Ninja):** Even when printing autonomously from the printer's USB drive (without serial G-code streaming), OctoLink monitors the Z-axis telemetry:
+   - As soon as the first layer starts printing ($0.05 \le Z \le 0.30\,\text{mm}$), OctoLink triggers Obico's `nozzlecam.start()` background thread to send 1 snapshot/second to Obico's AI.
+   - When layer 2 is reached ($Z > 0.30\,\text{mm}$) or the print finishes, OctoLink signals completion to Obico, triggering the automated First Layer Grade (A–F) report, timelapse video, and push notification.
+4. **Automated Interventions:** If Obico's AI detects a print failure (spaghetti, detachment, layer shift) and commands a pause or cancel, OctoLink intercepts `printer.pause_print()` or `printer.cancel_print()` and sends:
    ```http
    POST /api/v1/job
    Content-Type: application/json

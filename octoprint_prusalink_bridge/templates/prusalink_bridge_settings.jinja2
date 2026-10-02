@@ -67,6 +67,16 @@
         </div>
     </div>
 
+    <div class="control-group">
+        <div class="controls">
+            <label class="checkbox">
+                <input type="checkbox" data-bind="checked: settings.plugins.prusalink_bridge.sync_obico_nozzlecam">
+                <strong>{{ _('Obico NozzleCam / First Layer AI unterstützen (Nozzle Ninja)') }}</strong>
+            </label>
+            <span class="help-block">{{ _('Erkennt die erste Schicht automatisch über Z-Höhe und Status und steuert Obicos NozzleCam an, selbst wenn der Druck lokal vom USB-Stick des Prusa-Druckers ausgeführt wird.') }}</span>
+        </div>
+    </div>
+
     <hr/>
 
     <h4>{{ _('Befehlsweiterleitung (Abbruch & Pause)') }}</h4>

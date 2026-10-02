@@ -18,7 +18,7 @@ if "flask" not in sys.modules:
     mock_flask.abort = MagicMock()
     sys.modules["flask"] = mock_flask
 
-from octoprint_prusalink_bridge import PrusaLinkClient, PrusaLinkBridgePlugin
+from octoprint_prusalink_bridge import PrusaLinkClient, PrusaLinkBridgePlugin, __version__
 
 
 class TestPrusaLinkClient(unittest.TestCase):
@@ -52,7 +52,7 @@ class TestPrusaLinkClient(unittest.TestCase):
         self.assertEqual(data["printer"]["temp_nozzle"], 215.4)
         mock_get.assert_called_once_with(
             "http://192.168.1.100/api/v1/status",
-            headers={"Accept": "application/json", "User-Agent": "OctoPrint-PrusaLink-Bridge/0.1.0", "X-Api-Key": "secret_key"},
+            headers={"Accept": "application/json", "User-Agent": f"OctoPrint-PrusaLink-Bridge/{__version__}", "X-Api-Key": "secret_key"},
             timeout=3.0,
         )
 
@@ -96,7 +96,7 @@ class TestPrusaLinkClient(unittest.TestCase):
             json={"command": "pause"},
             headers={
                 "Accept": "application/json",
-                "User-Agent": "OctoPrint-PrusaLink-Bridge/0.1.0",
+                "User-Agent": f"OctoPrint-PrusaLink-Bridge/{__version__}",
                 "X-Api-Key": "key",
                 "Content-Type": "application/json",
             },
@@ -132,7 +132,7 @@ class TestPrusaLinkClient(unittest.TestCase):
         self.assertEqual(data, b"\x89PNG\r\n\x1a\nfakeimage")
         mock_get.assert_called_once_with(
             "http://192.168.1.100/thumb/l/usb/test.gco",
-            headers={"Accept": "application/json", "User-Agent": "OctoPrint-PrusaLink-Bridge/0.1.0", "X-Api-Key": "key"},
+            headers={"Accept": "application/json", "User-Agent": f"OctoPrint-PrusaLink-Bridge/{__version__}", "X-Api-Key": "key"},
             timeout=5.0,
         )
 
@@ -248,6 +248,7 @@ class TestPrusaLinkBridgePlugin(unittest.TestCase):
             "prusa_api_key": "test_api_key",
             "poll_interval": 2.0,
             "sync_temperatures": True,
+            "sync_obico_nozzlecam": True,
         })
         self.plugin._printer = DummyPrinter()
         self.plugin._event_bus = MagicMock()
@@ -260,6 +261,7 @@ class TestPrusaLinkBridgePlugin(unittest.TestCase):
         defaults = self.plugin.get_settings_defaults()
         self.assertEqual(defaults["poll_interval"], 2.0)
         self.assertTrue(defaults["sync_temperatures"])
+        self.assertTrue(defaults["sync_obico_nozzlecam"])
         self.assertEqual(defaults["prusa_ip"], "")
         self.assertEqual(defaults["prusa_api_key"], "")
 
@@ -478,6 +480,103 @@ class TestPrusaLinkBridgePlugin(unittest.TestCase):
         # Expected start timestamp = now - 1000
         self.assertAlmostEqual(mock_tracker.current_print_ts, int(time.time()) - 1000, delta=5)
 
+    def test_obico_nozzlecam_first_layer_start(self):
+        # Mock Obico plugin with NozzleCam
+        mock_obico = MagicMock()
+        mock_nozzlecam = MagicMock()
+        mock_nozzlecam.on_first_layer = False
+        mock_nozzlecam.nozzle_config = {"snapshot": "http://127.0.0.1:8080/snapshot"}
+        mock_obico.implementation.nozzlecam = mock_nozzlecam
+
+        self.plugin._plugin_manager = MagicMock()
+        self.plugin._plugin_manager.get_plugin.return_value = mock_obico
+
+        status_data = {
+            "printer": {"state": "PRINTING", "temp_nozzle": 215.0, "temp_bed": 60.0, "axis_z": 0.2},
+            "job": {"id": 107, "progress": 1.0, "time_printing": 25, "time_remaining": 1200, "file": {"display_name": "benchy_0.2mm.gcode"}},
+        }
+        with patch.object(self.plugin._client, "get_status", return_value=(True, status_data, "")), \
+             patch.object(self.plugin._client, "get_job", return_value=(True, status_data["job"], "")):
+            self.plugin._poll_prusalink("192.168.1.120", "test_api_key")
+
+        self.assertTrue(mock_nozzlecam.on_first_layer)
+        self.assertTrue(self.plugin._first_layer_inspecting)
+        self.assertTrue(self.plugin._prusalink_info["first_layer_inspecting"])
+
+    def test_obico_nozzlecam_first_layer_finish_on_layer2(self):
+        # Mock Obico plugin with NozzleCam initially on first layer
+        mock_obico = MagicMock()
+        mock_nozzlecam = MagicMock()
+        mock_nozzlecam.on_first_layer = True
+        mock_nozzlecam.nozzle_config = {"snapshot": "http://127.0.0.1:8080/snapshot"}
+        mock_obico.implementation.nozzlecam = mock_nozzlecam
+
+        self.plugin._first_layer_inspecting = True
+        self.plugin._is_prusalink_printing = True
+        self.plugin._plugin_manager = MagicMock()
+        self.plugin._plugin_manager.get_plugin.return_value = mock_obico
+
+        # Z height moves to layer 2 (0.4mm)
+        status_data = {
+            "printer": {"state": "PRINTING", "temp_nozzle": 215.0, "temp_bed": 60.0, "axis_z": 0.4},
+            "job": {"id": 107, "progress": 4.0, "time_printing": 90, "time_remaining": 1135, "file": {"display_name": "benchy_0.2mm.gcode"}},
+        }
+        with patch.object(self.plugin._client, "get_status", return_value=(True, status_data, "")), \
+             patch.object(self.plugin._client, "get_job", return_value=(True, status_data["job"], "")):
+            self.plugin._poll_prusalink("192.168.1.120", "test_api_key")
+
+        self.assertFalse(mock_nozzlecam.on_first_layer)
+        self.assertFalse(self.plugin._first_layer_inspecting)
+        self.assertFalse(self.plugin._prusalink_info["first_layer_inspecting"])
+
+    def test_obico_nozzlecam_finish_on_cancel(self):
+        mock_obico = MagicMock()
+        mock_nozzlecam = MagicMock()
+        mock_nozzlecam.on_first_layer = True
+        mock_nozzlecam.nozzle_config = {"snapshot": "http://127.0.0.1:8080/snapshot"}
+        mock_obico.implementation.nozzlecam = mock_nozzlecam
+
+        self.plugin._first_layer_inspecting = True
+        self.plugin._is_prusalink_printing = True
+        self.plugin._plugin_manager = MagicMock()
+        self.plugin._plugin_manager.get_plugin.return_value = mock_obico
+
+        # Print stopped mid-first layer
+        status_data = {
+            "printer": {"state": "STOPPED", "temp_nozzle": 120.0, "temp_bed": 45.0, "axis_z": 0.2},
+            "job": None,
+        }
+        with patch.object(self.plugin._client, "get_status", return_value=(True, status_data, "")), \
+             patch.object(self.plugin._client, "get_job", return_value=(True, None, "")):
+            self.plugin._poll_prusalink("192.168.1.120", "test_api_key")
+
+        self.assertFalse(mock_nozzlecam.on_first_layer)
+        self.assertFalse(self.plugin._first_layer_inspecting)
+        self.assertFalse(self.plugin._prusalink_info["first_layer_inspecting"])
+
+    def test_obico_nozzlecam_disabled_setting(self):
+        self.plugin._settings.set(["sync_obico_nozzlecam"], False)
+
+        mock_obico = MagicMock()
+        mock_nozzlecam = MagicMock()
+        mock_nozzlecam.on_first_layer = False
+        mock_nozzlecam.nozzle_config = {"snapshot": "http://127.0.0.1:8080/snapshot"}
+        mock_obico.implementation.nozzlecam = mock_nozzlecam
+
+        self.plugin._plugin_manager = MagicMock()
+        self.plugin._plugin_manager.get_plugin.return_value = mock_obico
+
+        status_data = {
+            "printer": {"state": "PRINTING", "temp_nozzle": 215.0, "temp_bed": 60.0, "axis_z": 0.2},
+            "job": {"id": 108, "progress": 1.0, "time_printing": 25, "time_remaining": 1200, "file": {"display_name": "benchy_0.2mm.gcode"}},
+        }
+        with patch.object(self.plugin._client, "get_status", return_value=(True, status_data, "")), \
+             patch.object(self.plugin._client, "get_job", return_value=(True, status_data["job"], "")):
+            self.plugin._poll_prusalink("192.168.1.120", "test_api_key")
+
+        self.assertFalse(mock_nozzlecam.on_first_layer)
+        self.assertFalse(self.plugin._first_layer_inspecting)
+
     def test_finished_state_clears_printing_flags(self):
         # Simulate printer serial stuck in Printing
         self.plugin._printer._state_str = "Printing"
@@ -574,6 +673,16 @@ class TestPrusaLinkBridgePlugin(unittest.TestCase):
             resp = self.plugin.on_api_get(mock_request)
             self.assertEqual(resp.mimetype, "image/png")
             self.assertEqual(resp.data, b"\x89PNG\r\n\x1a\nfakeimage")
+
+    def test_get_update_information(self):
+        info = self.plugin.get_update_information()
+        self.assertIn("prusalink_bridge", info)
+        cfg = info["prusalink_bridge"]
+        self.assertEqual(cfg["type"], "github_release")
+        self.assertEqual(cfg["user"], "Snake4you")
+        self.assertEqual(cfg["repo"], "OctoLink")
+        self.assertEqual(cfg["current"], __version__)
+        self.assertIn("Snake4you/OctoLink", cfg["pip"])
 
 
 if __name__ == "__main__":

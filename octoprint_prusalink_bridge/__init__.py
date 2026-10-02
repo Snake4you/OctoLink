@@ -17,6 +17,8 @@ except ImportError:
     octoprint = None
     Events = None
 
+__version__ = "0.2.0"
+
 
 class PrusaLinkClient:
     """
@@ -30,7 +32,7 @@ class PrusaLinkClient:
     def _build_headers(api_key: str) -> Dict[str, str]:
         headers = {
             "Accept": "application/json",
-            "User-Agent": "OctoPrint-PrusaLink-Bridge/0.1.0",
+            "User-Agent": f"OctoPrint-PrusaLink-Bridge/{__version__}",
         }
         if api_key:
             headers["X-Api-Key"] = api_key
@@ -312,6 +314,8 @@ class PrusaLinkBridgePlugin(*_PluginBases):
             "cost": None,
         }
 
+        self._first_layer_inspecting = False
+
         # Telemetry data dictionary for UI & API
         self._prusalink_info = {
             "online": False,
@@ -340,6 +344,7 @@ class PrusaLinkBridgePlugin(*_PluginBases):
             "filament_length_m": None,
             "filament_volume_cm3": None,
             "filament_cost": None,
+            "first_layer_inspecting": False,
         }
         self._prusa_model_name = "Prusa 3D Drucker"
 
@@ -354,6 +359,7 @@ class PrusaLinkBridgePlugin(*_PluginBases):
             "prusa_api_key": "",
             "poll_interval": 2.0,
             "sync_temperatures": True,
+            "sync_obico_nozzlecam": True,
         }
 
     def on_settings_save(self, data):
@@ -688,6 +694,7 @@ class PrusaLinkBridgePlugin(*_PluginBases):
             "filament_length_m": self._current_filament.get("length_m"),
             "filament_volume_cm3": self._current_filament.get("volume_cm3"),
             "filament_cost": self._current_filament.get("cost"),
+            "first_layer_inspecting": self._first_layer_inspecting,
         }
         if hasattr(self, "_plugin_manager") and self._plugin_manager is not None:
             try:
@@ -858,6 +865,7 @@ class PrusaLinkBridgePlugin(*_PluginBases):
             "filament_length_m": None,
             "filament_volume_cm3": None,
             "filament_cost": None,
+            "first_layer_inspecting": False,
         }
         if hasattr(self, "_plugin_manager") and self._plugin_manager is not None:
             try:
@@ -1036,42 +1044,100 @@ class PrusaLinkBridgePlugin(*_PluginBases):
         elif not is_printing and not is_paused:
             self._current_axis_z = None
 
-        # 3. Synchronize Obico print job tracker (for layer height and real elapsed time)
+        # 3. Synchronize Obico print job tracker and NozzleCam (First Layer AI)
         if hasattr(self, "_plugin_manager") and self._plugin_manager is not None:
             try:
-                obico_plugin = self._plugin_manager.get_plugin("obico")
+                obico_plugin = self._plugin_manager.get_plugin("obico") or self._plugin_manager.get_plugin("thespaghettidetective")
                 if obico_plugin and hasattr(obico_plugin, "implementation"):
-                    tracker = getattr(obico_plugin.implementation, "_print_job_tracker", None)
+                    obico_impl = obico_plugin.implementation
+                    tracker = getattr(obico_impl, "_print_job_tracker", None)
+
+                    # Determine layer height from filename or default to 0.20mm
+                    layer_height = 0.2
+                    if filename:
+                        match = re.search(r"([0-9.]+)\s*mm", filename, re.IGNORECASE)
+                        if match:
+                            try:
+                                lh = float(match.group(1))
+                                if 0.05 <= lh <= 0.8:
+                                    layer_height = lh
+                            except ValueError:
+                                pass
+
+                    current_layer = 1
+                    if axis_z is not None:
+                        current_layer = max(1, int(round(axis_z / layer_height)))
+
                     if tracker is not None:
                         # Sync start timestamp so Obico displays the real elapsed time
-                        if is_printing and time_printing and getattr(tracker, "current_print_ts", -1) > 0:
+                        tracker_ts = getattr(tracker, "current_print_ts", -1)
+                        if is_printing and time_printing and isinstance(tracker_ts, (int, float)) and tracker_ts > 0:
                             expected_start_ts = int(time.time()) - int(time_printing)
-                            if abs(tracker.current_print_ts - expected_start_ts) > 10:
+                            if abs(tracker_ts - expected_start_ts) > 10:
                                 tracker.current_print_ts = expected_start_ts
 
                         # Sync current layer height / layer number
                         if axis_z is not None:
-                            layer_height = 0.2
-                            if filename:
-                                match = re.search(r"([0-9.]+)\s*mm", filename, re.IGNORECASE)
-                                if match:
-                                    try:
-                                        lh = float(match.group(1))
-                                        if 0.05 <= lh <= 0.8:
-                                            layer_height = lh
-                                    except ValueError:
-                                        pass
-                            current_layer = max(1, int(round(axis_z / layer_height)))
                             tracker.current_layer_height = current_layer
 
-                            if progress and progress > 0:
+                            if progress and isinstance(progress, (int, float)) and progress > 0:
                                 total_layers = max(current_layer, int(round(current_layer / (float(progress) / 100.0))))
                                 if getattr(tracker, "_file_metadata_cache", None) is None:
                                     tracker._file_metadata_cache = {}
                                 if isinstance(tracker._file_metadata_cache, dict):
                                     tracker._file_metadata_cache.setdefault("obico", {})["totalLayerCount"] = total_layers
+
+                    # Synchronize Obico NozzleCam (Nozzle Ninja / First Layer AI)
+                    sync_nozzlecam = True
+                    if hasattr(self, "_settings") and self._settings:
+                        setting_val = self._settings.get(["sync_obico_nozzlecam"])
+                        if setting_val is not None:
+                            sync_nozzlecam = bool(setting_val)
+                        else:
+                            sync_nozzlecam = True
+
+                    if sync_nozzlecam:
+                        nozzlecam = getattr(obico_impl, "nozzlecam", None)
+                        if nozzlecam is not None:
+                            # Verify if nozzlecam config exists or try building it from Obico settings
+                            has_config = getattr(nozzlecam, "nozzle_config", None) is not None
+                            if not has_config and hasattr(obico_impl, "_settings"):
+                                configured_camera = obico_impl._settings.get(["nozzle_camera"])
+                                if configured_camera and hasattr(nozzlecam, "create_nozzlecam_config"):
+                                    try:
+                                        from octoprint_obico.webcam_stream import get_webcam_configs
+                                        configs = get_webcam_configs(obico_impl)
+                                        nozzlecam.create_nozzlecam_config(configs)
+                                        has_config = getattr(nozzlecam, "nozzle_config", None) is not None
+                                    except Exception:
+                                        pass
+
+                            # First layer active criteria:
+                            # 1. Printer is currently PRINTING and not paused
+                            # 2. Z height is within first layer boundary (0.05 <= axis_z <= layer_height * 1.5)
+                            is_first_layer = False
+                            if is_printing and not is_paused:
+                                if axis_z is not None:
+                                    is_first_layer = (0.05 <= axis_z <= (layer_height * 1.5))
+                                else:
+                                    is_first_layer = (progress is not None and 0.0 <= progress <= 2.0) or (time_printing is not None and time_printing <= 60)
+
+                            if is_first_layer and has_config:
+                                if not getattr(nozzlecam, "on_first_layer", False):
+                                    self._logger.info("First layer printing detected via PrusaLink! Triggering Obico NozzleCam inspection...")
+                                    nozzlecam.on_first_layer = True
+                                    self._first_layer_inspecting = True
+                                    t = threading.Thread(target=nozzlecam.start, name="OctoLink-ObicoNozzleCam")
+                                    t.daemon = True
+                                    t.start()
+                            else:
+                                if getattr(nozzlecam, "on_first_layer", False):
+                                    reason = f"Z={axis_z}mm (layer > 1)" if (axis_z is not None and axis_z > (layer_height * 1.5)) else ("print ended/paused" if not is_printing or is_paused else "layer completed")
+                                    self._logger.info(f"First layer finished ({reason})! Finalizing Obico NozzleCam inspection...")
+                                    nozzlecam.on_first_layer = False
+                                    self._first_layer_inspecting = False
             except Exception as e:
-                self._logger.debug(f"Error syncing with Obico tracker: {e}")
+                self._logger.debug(f"Error syncing with Obico: {e}")
 
         # 4. Fire OctoPrint Events for plugins like Obico
         event_bus = getattr(self, "_event_bus", None)
@@ -1438,21 +1504,23 @@ class PrusaLinkBridgePlugin(*_PluginBases):
     # ~~ Software Update Hook
 
     def get_update_information(self):
+        current_version = getattr(self, "_plugin_version", __version__)
         return {
             "prusalink_bridge": {
                 "displayName": "OctoPrint-PrusaLink-Bridge",
-                "displayVersion": self._plugin_version if hasattr(self, "_plugin_version") else "0.1.0",
+                "displayVersion": current_version,
                 "type": "github_release",
-                "user": "snake",
-                "repo": "OctoPrint-PrusaLink-Bridge",
-                "current": self._plugin_version if hasattr(self, "_plugin_version") else "0.1.0",
-                "pip": "https://github.com/snake/OctoPrint-PrusaLink-Bridge/archive/{target_version}.zip",
+                "user": "Snake4you",
+                "repo": "OctoLink",
+                "current": current_version,
+                "pip": "https://github.com/Snake4you/OctoLink/archive/{target_version}.zip",
             }
         }
 
 
 # Plugin registration
 __plugin_name__ = "PrusaLink Bridge"
+__plugin_version__ = __version__
 __plugin_pythoncompat__ = ">=3.7,<4"
 __plugin_implementation__ = PrusaLinkBridgePlugin()
 __plugin_hooks__ = {

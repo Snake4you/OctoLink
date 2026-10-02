@@ -4,7 +4,7 @@ from setuptools import setup, find_packages
 plugin_identifier = "prusalink_bridge"
 plugin_package = "octoprint_prusalink_bridge"
 plugin_name = "OctoPrint-PrusaLink-Bridge"
-plugin_version = "0.1.0"
+plugin_version = "0.2.0"
 plugin_description = (
     "Mirrors telemetry, temperatures and print job status from PrusaLink "
     "(MK3.5, MK4, XL, CORE One) to OctoPrint for third-party plugins like Obico."

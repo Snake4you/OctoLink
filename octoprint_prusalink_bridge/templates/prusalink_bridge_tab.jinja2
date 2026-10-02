@@ -41,6 +41,9 @@
                 <h4 style="margin: 0 0 8px 0; word-break: break-all;">
                     <i class="fa fa-file-text-o icon-file-alt"></i> {{ _('Auftrag') }}:
                     <span data-bind="text: jobFile() || '{{ _('Kein aktiver Druck') }}'" style="font-weight: normal;"></span>
+                    <span class="badge badge-success" data-bind="visible: firstLayerInspecting" style="margin-left: 8px;">
+                        <i class="fa fa-video-camera icon-facetime-video"></i> {{ _('Obico NozzleCam Check aktiv') }}
+                    </span>
                 </h4>
 
                 <!-- Filament Demand Box -->

@@ -38,6 +38,7 @@ $(function() {
         self.filamentLengthM = ko.observable(null);
         self.filamentVolumeCm3 = ko.observable(null);
         self.filamentCost = ko.observable(null);
+        self.firstLayerInspecting = ko.observable(false);
 
         self.onBeforeBinding = function () {
             if (self.settingsViewModel && self.settingsViewModel.settings) {
@@ -174,6 +175,7 @@ $(function() {
             if (data.filament_length_m !== undefined) self.filamentLengthM(data.filament_length_m);
             if (data.filament_volume_cm3 !== undefined) self.filamentVolumeCm3(data.filament_volume_cm3);
             if (data.filament_cost !== undefined) self.filamentCost(data.filament_cost);
+            if (data.first_layer_inspecting !== undefined) self.firstLayerInspecting(Boolean(data.first_layer_inspecting));
         };
 
         self.onDataUpdaterPluginMessage = function(plugin, data) {
