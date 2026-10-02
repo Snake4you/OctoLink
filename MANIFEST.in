@@ -1,0 +1,4 @@
+include README.md
+include LICENSE
+recursive-include octoprint_prusalink_bridge/templates *
+recursive-include octoprint_prusalink_bridge/static *

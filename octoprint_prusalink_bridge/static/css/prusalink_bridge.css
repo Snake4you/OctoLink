@@ -1,0 +1,25 @@
+/* Styles for OctoPrint-PrusaLink-Bridge */
+
+#settings_plugin_prusalink_bridge hr {
+    margin: 18px 0;
+    border: 0;
+    border-top: 1px solid #e5e5e5;
+    border-bottom: 1px solid #ffffff;
+}
+
+#settings_plugin_prusalink_bridge h4 {
+    margin-bottom: 15px;
+    color: #333333;
+}
+
+#settings_plugin_prusalink_bridge .text-success {
+    color: #468847;
+}
+
+#settings_plugin_prusalink_bridge .text-error {
+    color: #b94a48;
+}
+
+#settings_plugin_prusalink_bridge .text-info {
+    color: #3a87ad;
+}

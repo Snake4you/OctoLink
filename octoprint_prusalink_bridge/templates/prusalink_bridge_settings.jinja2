@@ -1,0 +1,76 @@
+<form class="form-horizontal">
+    <div class="row-fluid">
+        <div class="alert alert-info">
+            <strong><i class="icon-info-sign"></i> {{ _('PrusaLink Bridge & Obico-Kompatibilität') }}</strong>
+            <p style="margin-top: 5px; margin-bottom: 0;">
+                {{ _('Dieses Plugin fragt die REST-API deines Prusa-Druckers (MK3.5, MK4, XL, CORE One etc.) über PrusaLink ab und spiegelt den Status in OctoPrint. Dadurch erkennen Plugins wie Obico (The Spaghetti Detective) laufende Drucke selbst dann, wenn sie direkt vom USB-Stick des Druckers gestartet wurden.') }}
+            </p>
+        </div>
+    </div>
+
+    <h4>{{ _('Verbindungseinstellungen') }}</h4>
+
+    <div class="control-group">
+        <label class="control-label" for="settings_prusalink_ip">{{ _('PrusaLink IP / Hostname') }}</label>
+        <div class="controls">
+            <input type="text" id="settings_prusalink_ip" class="input-xlarge" 
+                   data-bind="value: settings.plugins.prusalink_bridge.prusa_ip" 
+                   placeholder="z. B. 192.168.1.150 oder prusa.local">
+            <span class="help-block">{{ _('Lokale IP-Adresse oder Hostname des Prusa-Druckers im Heimnetzwerk.') }}</span>
+        </div>
+    </div>
+
+    <div class="control-group">
+        <label class="control-label" for="settings_prusalink_api_key">{{ _('PrusaLink API-Key') }}</label>
+        <div class="controls">
+            <input type="password" id="settings_prusalink_api_key" class="input-xlarge" 
+                   data-bind="value: settings.plugins.prusalink_bridge.prusa_api_key" 
+                   placeholder="API-Key aus dem LCD-Menü">
+            <span class="help-block">{{ _('Zu finden am Drucker unter: Einstellungen -> Netzwerk -> PrusaLink.') }}</span>
+        </div>
+    </div>
+
+    <div class="control-group">
+        <div class="controls">
+            <button class="btn btn-info" type="button" data-bind="click: testPrusaLinkConnection, enable: !testingConnection()">
+                <!-- ko if: testingConnection -->
+                <i class="icon-spinner icon-spin"></i> {{ _('Teste Verbindung...') }}
+                <!-- /ko -->
+                <!-- ko ifnot: testingConnection -->
+                <i class="icon-refresh"></i> {{ _('Verbindung testen') }}
+                <!-- /ko -->
+            </button>
+            <span data-bind="text: connectionTestMessage, css: connectionTestClass" style="margin-left: 10px; font-weight: bold;"></span>
+        </div>
+    </div>
+
+    <hr/>
+
+    <h4>{{ _('Synchronisation & Polling') }}</h4>
+
+    <div class="control-group">
+        <label class="control-label" for="settings_prusalink_poll_interval">{{ _('Polling-Intervall (Sekunden)') }}</label>
+        <div class="controls">
+            <input type="number" id="settings_prusalink_poll_interval" class="input-mini" step="0.5" min="0.5" max="60" 
+                   data-bind="value: settings.plugins.prusalink_bridge.poll_interval">
+            <span class="help-block">{{ _('Zyklus für die Statusabfrage über HTTP (Standard: 2.0 Sekunden).') }}</span>
+        </div>
+    </div>
+
+    <div class="control-group">
+        <div class="controls">
+            <label class="checkbox">
+                <input type="checkbox" data-bind="checked: settings.plugins.prusalink_bridge.sync_temperatures">
+                <strong>{{ _('Temperaturen in OctoPrint spiegeln') }}</strong>
+            </label>
+            <span class="help-block">{{ _('Aktualisiert Nozzle- und Heizbett-Temperaturen in Echtzeit für die OctoPrint-Graphen.') }}</span>
+        </div>
+    </div>
+
+    <hr/>
+
+    <h4>{{ _('Befehlsweiterleitung (Abbruch & Pause)') }}</h4>
+    <p class="muted">
+        {{ _('Wenn Obico oder das OctoPrint-Webinterface während eines PrusaLink-Drucks eine Pause oder einen Abbruch auslöst, fängt das Plugin den Befehl automatisch ab und sendet POST /api/v1/job an PrusaLink.') }}
+    </p>
+</form>
