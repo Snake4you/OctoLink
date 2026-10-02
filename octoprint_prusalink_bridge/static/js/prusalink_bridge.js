@@ -30,6 +30,15 @@ $(function() {
         self.prusaIp = ko.observable("");
         self.printerName = ko.observable("Prusa MK3.5S");
 
+        // Thumbnail & Filament Observables
+        self.thumbnailUrl = ko.observable(null);
+        self.thumbnailPath = ko.observable(null);
+        self.filamentType = ko.observable(null);
+        self.filamentWeightG = ko.observable(null);
+        self.filamentLengthM = ko.observable(null);
+        self.filamentVolumeCm3 = ko.observable(null);
+        self.filamentCost = ko.observable(null);
+
         self.onBeforeBinding = function () {
             if (self.settingsViewModel && self.settingsViewModel.settings) {
                 self.settings = self.settingsViewModel.settings;
@@ -87,6 +96,47 @@ $(function() {
             return self.formatTime(self.timePrinting());
         });
 
+        self.formatFilamentWeight = ko.pureComputed(function() {
+            var w = self.filamentWeightG();
+            if (w === null || w === undefined) return "-";
+            return parseFloat(w).toFixed(1) + " g";
+        });
+
+        self.formatFilamentLength = ko.pureComputed(function() {
+            var l = self.filamentLengthM();
+            if (l === null || l === undefined) return "-";
+            return parseFloat(l).toFixed(2) + " m";
+        });
+
+        self.formatFilamentVolume = ko.pureComputed(function() {
+            var v = self.filamentVolumeCm3();
+            if (v === null || v === undefined) return "-";
+            return parseFloat(v).toFixed(1) + " cm³";
+        });
+
+        self.formatFilamentCost = ko.pureComputed(function() {
+            var c = self.filamentCost();
+            if (c === null || c === undefined) return null;
+            return parseFloat(c).toFixed(2) + " €";
+        });
+
+        self.formatFilamentSummary = ko.pureComputed(function() {
+            var parts = [];
+            if (self.filamentWeightG() !== null && self.filamentWeightG() !== undefined) {
+                parts.push(parseFloat(self.filamentWeightG()).toFixed(1) + " g");
+            }
+            if (self.filamentLengthM() !== null && self.filamentLengthM() !== undefined) {
+                parts.push(parseFloat(self.filamentLengthM()).toFixed(2) + " m");
+            }
+            if (parts.length > 0) return parts.join(" / ");
+            if (self.filamentType()) return self.filamentType();
+            return "-";
+        });
+
+        self.hasFilamentInfo = ko.pureComputed(function() {
+            return Boolean(self.filamentType() || self.filamentWeightG() !== null || self.filamentLengthM() !== null);
+        });
+
         self.prusaLinkUrl = ko.pureComputed(function() {
             var ip = self.prusaIp();
             if (!ip && self.settings && self.settings.plugins && self.settings.plugins.prusalink_bridge) {
@@ -117,6 +167,13 @@ $(function() {
             if (data.time_remaining !== undefined) self.timeRemaining(data.time_remaining);
             if (data.prusa_ip) self.prusaIp(data.prusa_ip);
             if (data.printer_name) self.printerName(data.printer_name);
+            if (data.thumbnail_url !== undefined) self.thumbnailUrl(data.thumbnail_url);
+            if (data.thumbnail_path !== undefined) self.thumbnailPath(data.thumbnail_path);
+            if (data.filament_type !== undefined) self.filamentType(data.filament_type);
+            if (data.filament_weight_g !== undefined) self.filamentWeightG(data.filament_weight_g);
+            if (data.filament_length_m !== undefined) self.filamentLengthM(data.filament_length_m);
+            if (data.filament_volume_cm3 !== undefined) self.filamentVolumeCm3(data.filament_volume_cm3);
+            if (data.filament_cost !== undefined) self.filamentCost(data.filament_cost);
         };
 
         self.onDataUpdaterPluginMessage = function(plugin, data) {
@@ -211,10 +268,13 @@ $(function() {
                 var widgetHtml = '<div id="prusalink_dashboard_widget" class="dashboard-widget" style="margin-top:15px; padding:12px; background:#fafafa; border:1px solid #ddd; border-radius:4px;">' +
                     '<h5 style="margin-top:0; border-bottom:1px solid #eee; padding-bottom:5px;"><i class="fa fa-print icon-print"></i> PrusaLink Info <span class="label pull-right" data-bind="css: stateClass, text: state"></span></h5>' +
                     '<div class="row-fluid text-center">' +
-                    '  <div class="span3"><strong>Z-Höhe:</strong> <span data-bind="text: formatZ"></span></div>' +
-                    '  <div class="span3"><strong>Hotend-Fan:</strong> <span data-bind="text: fanHotend() !== null ? (fanHotend() + \' RPM\') : \'-\'"></span></div>' +
-                    '  <div class="span3"><strong>Print-Fan:</strong> <span data-bind="text: fanPrint() !== null ? (fanPrint() + \' RPM\') : \'-\'"></span></div>' +
-                    '  <div class="span3"><strong>Speed / Flow:</strong> <span data-bind="text: (speed() || 100) + \'% / \' + (flow() || 100) + \'%\'"></span></div>' +
+                    '  <div class="span2" data-bind="visible: thumbnailUrl">' +
+                    '    <img data-bind="attr: {src: thumbnailUrl}" style="max-height:55px; border-radius:3px;" />' +
+                    '  </div>' +
+                    '  <div class="span2"><strong>Z-Höhe:</strong><br><span data-bind="text: formatZ"></span></div>' +
+                    '  <div class="span3"><strong>Filament:</strong><br><span class="badge" data-bind="visible: filamentType, text: filamentType"></span> <span data-bind="text: formatFilamentSummary"></span></div>' +
+                    '  <div class="span2"><strong>Hotend-Fan:</strong><br><span data-bind="text: fanHotend() !== null ? (fanHotend() + \' RPM\') : \'-\'"></span></div>' +
+                    '  <div class="span3"><strong>Speed / Flow:</strong><br><span data-bind="text: (speed() || 100) + \'% / \' + (flow() || 100) + \'%\'"></span></div>' +
                     '</div>' +
                     '</div>';
 

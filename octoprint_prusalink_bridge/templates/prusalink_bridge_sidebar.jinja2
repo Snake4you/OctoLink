@@ -7,11 +7,26 @@
 <div id="sidebar_plugin_prusalink_bridge" class="accordion-body collapse in">
     <div class="accordion-inner">
         <div data-bind="visible: isOnline">
+            <!-- Compact thumbnail preview -->
+            <div data-bind="visible: thumbnailUrl" style="text-align: center; margin-bottom: 8px;">
+                <a data-bind="attr: {href: thumbnailUrl}" target="_blank" rel="noopener noreferrer">
+                    <img data-bind="attr: {src: thumbnailUrl, alt: jobFile}" style="max-height: 80px; max-width: 100%; border-radius: 3px; box-shadow: 0 1px 4px rgba(0,0,0,0.2);" />
+                </a>
+            </div>
+
             <table class="table table-condensed" style="margin-bottom: 5px; font-size: 12px;">
                 <tbody>
                     <tr>
                         <td><strong>{{ _('Status') }}:</strong></td>
                         <td class="text-right"><span data-bind="text: state"></span></td>
+                    </tr>
+                    <tr data-bind="visible: filamentType">
+                        <td><strong>{{ _('Material') }}:</strong></td>
+                        <td class="text-right"><span class="badge badge-info" data-bind="text: filamentType"></span></td>
+                    </tr>
+                    <tr data-bind="visible: hasFilamentInfo">
+                        <td><strong>{{ _('Filament') }}:</strong></td>
+                        <td class="text-right"><span data-bind="text: formatFilamentSummary"></span></td>
                     </tr>
                     <tr>
                         <td><strong>{{ _('Z-Höhe') }}:</strong></td>

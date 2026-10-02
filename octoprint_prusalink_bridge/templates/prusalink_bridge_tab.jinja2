@@ -22,52 +22,88 @@
 
     <!-- Active / Last Job Card -->
     <div class="well well-small prusalink-job-card" data-bind="visible: isOnline">
-        <h4 style="margin: 0 0 10px 0;">
-            <i class="fa fa-file-text-o icon-file-alt"></i> {{ _('Druckauftrag') }}:
-            <span data-bind="text: jobFile() || '{{ _('Kein aktiver Druck') }}'" style="font-weight: normal;"></span>
-        </h4>
+        <div class="row-fluid">
+            <!-- Thumbnail Column -->
+            <div class="span4 text-center">
+                <div class="prusalink-thumb-wrap" data-bind="visible: thumbnailUrl">
+                    <a data-bind="attr: {href: thumbnailUrl}" target="_blank" rel="noopener noreferrer" title="{{ _('Vorschaubild in Originalgröße öffnen') }}">
+                        <img data-bind="attr: {src: thumbnailUrl, alt: jobFile}" class="prusalink-thumb-img" />
+                    </a>
+                </div>
+                <div class="prusalink-thumb-placeholder" data-bind="visible: !thumbnailUrl()">
+                    <i class="fa fa-cube fa-4x text-muted" style="opacity: 0.25; margin: 30px 0 10px 0;"></i>
+                    <p class="text-muted" style="font-size: 11px;">{{ _('Kein Vorschaubild') }}</p>
+                </div>
+            </div>
 
-        <div class="progress progress-striped active" style="margin-bottom: 8px;" data-bind="visible: state() === 'PRINTING' || state() === 'PAUSED'">
-            <div class="bar bar-info" data-bind="style: {width: formatProgress()}"></div>
-        </div>
+            <!-- Job Details Column -->
+            <div class="span8">
+                <h4 style="margin: 0 0 8px 0; word-break: break-all;">
+                    <i class="fa fa-file-text-o icon-file-alt"></i> {{ _('Auftrag') }}:
+                    <span data-bind="text: jobFile() || '{{ _('Kein aktiver Druck') }}'" style="font-weight: normal;"></span>
+                </h4>
 
-        <div class="row-fluid text-center prusalink-metrics-row">
-            <div class="span3">
-                <div class="metric-box">
-                    <span class="metric-label">{{ _('Fortschritt') }}</span>
-                    <span class="metric-value" data-bind="text: formatProgress">0%</span>
+                <!-- Filament Demand Box -->
+                <div class="prusalink-filament-box" data-bind="visible: hasFilamentInfo" style="margin-bottom: 12px; padding: 6px 10px; background: #f0f4f8; border-radius: 4px; border: 1px solid #d8e2ec; font-size: 12px;">
+                    <span style="font-weight: bold; margin-right: 6px;"><i class="fa fa-circle-o-notch icon-circle-blank"></i> {{ _('Filamentbedarf') }}:</span>
+                    <span class="badge badge-info" data-bind="visible: filamentType, text: filamentType" style="margin-right: 8px;"></span>
+                    <span data-bind="visible: filamentWeightG() !== null" style="margin-right: 10px;">
+                        <strong>{{ _('Gewicht') }}:</strong> <span data-bind="text: formatFilamentWeight"></span>
+                    </span>
+                    <span data-bind="visible: filamentLengthM() !== null" style="margin-right: 10px;">
+                        <strong>{{ _('Länge') }}:</strong> <span data-bind="text: formatFilamentLength"></span>
+                    </span>
+                    <span data-bind="visible: filamentVolumeCm3() !== null" style="margin-right: 10px;">
+                        <strong>{{ _('Volumen') }}:</strong> <span data-bind="text: formatFilamentVolume"></span>
+                    </span>
+                    <span data-bind="visible: formatFilamentCost() !== null">
+                        <strong>{{ _('Kosten') }}:</strong> <span data-bind="text: formatFilamentCost"></span>
+                    </span>
                 </div>
-            </div>
-            <div class="span3">
-                <div class="metric-box">
-                    <span class="metric-label">{{ _('Verstrichene Zeit') }}</span>
-                    <span class="metric-value" data-bind="text: formatElapsed">--:--</span>
-                </div>
-            </div>
-            <div class="span3">
-                <div class="metric-box">
-                    <span class="metric-label">{{ _('Verbleibende Zeit') }}</span>
-                    <span class="metric-value" data-bind="text: formatRemaining">--:--</span>
-                </div>
-            </div>
-            <div class="span3">
-                <div class="metric-box">
-                    <span class="metric-label">{{ _('Z-Höhe') }}</span>
-                    <span class="metric-value" data-bind="text: formatZ">-</span>
-                </div>
-            </div>
-        </div>
 
-        <div class="job-actions text-center" style="margin-top: 10px;" data-bind="visible: state() === 'PRINTING' || state() === 'PAUSED'">
-            <button class="btn btn-warning btn-small" data-bind="visible: state() === 'PRINTING', click: function() { sendJobCommand('pause'); }">
-                <i class="fa fa-pause icon-pause"></i> {{ _('Pausieren') }}
-            </button>
-            <button class="btn btn-success btn-small" data-bind="visible: state() === 'PAUSED', click: function() { sendJobCommand('resume'); }">
-                <i class="fa fa-play icon-play"></i> {{ _('Fortsetzen') }}
-            </button>
-            <button class="btn btn-danger btn-small" data-bind="click: function() { if (confirm('{{ _('Druck wirklich abbrechen?') }}')) sendJobCommand('cancel'); }">
-                <i class="fa fa-stop icon-stop"></i> {{ _('Abbrechen') }}
-            </button>
+                <div class="progress progress-striped active" style="margin-bottom: 8px;" data-bind="visible: state() === 'PRINTING' || state() === 'PAUSED'">
+                    <div class="bar bar-info" data-bind="style: {width: formatProgress()}"></div>
+                </div>
+
+                <div class="row-fluid text-center prusalink-metrics-row">
+                    <div class="span3">
+                        <div class="metric-box">
+                            <span class="metric-label">{{ _('Fortschritt') }}</span>
+                            <span class="metric-value" data-bind="text: formatProgress">0%</span>
+                        </div>
+                    </div>
+                    <div class="span3">
+                        <div class="metric-box">
+                            <span class="metric-label">{{ _('Verstrichen') }}</span>
+                            <span class="metric-value" data-bind="text: formatElapsed">--:--</span>
+                        </div>
+                    </div>
+                    <div class="span3">
+                        <div class="metric-box">
+                            <span class="metric-label">{{ _('Verbleibend') }}</span>
+                            <span class="metric-value" data-bind="text: formatRemaining">--:--</span>
+                        </div>
+                    </div>
+                    <div class="span3">
+                        <div class="metric-box">
+                            <span class="metric-label">{{ _('Z-Höhe') }}</span>
+                            <span class="metric-value" data-bind="text: formatZ">-</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="job-actions text-center" style="margin-top: 10px;" data-bind="visible: state() === 'PRINTING' || state() === 'PAUSED'">
+                    <button class="btn btn-warning btn-small" data-bind="visible: state() === 'PRINTING', click: function() { sendJobCommand('pause'); }">
+                        <i class="fa fa-pause icon-pause"></i> {{ _('Pausieren') }}
+                    </button>
+                    <button class="btn btn-success btn-small" data-bind="visible: state() === 'PAUSED', click: function() { sendJobCommand('resume'); }">
+                        <i class="fa fa-play icon-play"></i> {{ _('Fortsetzen') }}
+                    </button>
+                    <button class="btn btn-danger btn-small" data-bind="click: function() { if (confirm('{{ _('Druck wirklich abbrechen?') }}')) sendJobCommand('cancel'); }">
+                        <i class="fa fa-stop icon-stop"></i> {{ _('Abbrechen') }}
+                    </button>
+                </div>
+            </div>
         </div>
     </div>
 

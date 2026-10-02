@@ -1,8 +1,22 @@
 # coding=utf-8
+import sys
 import time
 import unittest
 from unittest.mock import MagicMock, patch
 import requests
+
+if "flask" not in sys.modules:
+    mock_flask = MagicMock()
+    def fake_response(data, mimetype=None):
+        m = MagicMock()
+        m.data = data
+        m.mimetype = mimetype
+        m.headers = {}
+        return m
+    mock_flask.Response = fake_response
+    mock_flask.jsonify = lambda d: d
+    mock_flask.abort = MagicMock()
+    sys.modules["flask"] = mock_flask
 
 from octoprint_prusalink_bridge import PrusaLinkClient, PrusaLinkBridgePlugin
 
@@ -106,6 +120,40 @@ class TestPrusaLinkClient(unittest.TestCase):
         self.assertTrue(success)
         self.assertIn("stopped job 42", msg)
         mock_delete.assert_called_once()
+
+    @patch("requests.get")
+    def test_get_thumbnail(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.content = b"\x89PNG\r\n\x1a\nfakeimage"
+        mock_get.return_value = mock_resp
+
+        data = self.client.get_thumbnail("192.168.1.100", "key", "/thumb/l/usb/test.gco")
+        self.assertEqual(data, b"\x89PNG\r\n\x1a\nfakeimage")
+        mock_get.assert_called_once_with(
+            "http://192.168.1.100/thumb/l/usb/test.gco",
+            headers={"Accept": "application/json", "User-Agent": "OctoPrint-PrusaLink-Bridge/0.1.0", "X-Api-Key": "key"},
+            timeout=5.0,
+        )
+
+    @patch("requests.get")
+    def test_get_files_list(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "children": [
+                {"name": "TEST~1.GCO", "display_name": "test.gcode", "refs": {"thumbnail": "/thumb/l/usb/TEST~1.GCO"}}
+            ]
+
+        }
+        mock_get.return_value = mock_resp
+
+        ok, files, err = self.client.get_files_list("192.168.1.100", "key")
+        self.assertTrue(ok)
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0]["name"], "TEST~1.GCO")
+
+
 
 
 class DummySettings:
@@ -496,8 +544,40 @@ class TestPrusaLinkBridgePlugin(unittest.TestCase):
         self.assertEqual(info["fan_hotend"], 0)
         self.assertEqual(info["speed"], 100)
 
+    def test_update_file_metadata_bgcode(self):
+        fake_header = (
+            b"; header\n"
+            b"; filament_type = PETG\n"
+            b"; filament used [g] = 15.42\n"
+            b"; filament used [cm3] = 12.14\n"
+            b"; filament used [mm] = 5120.3\n"
+            b"; filament cost = 0.45\n"
+        )
+        with patch.object(self.plugin._client, "get_files_list", return_value=(True, [
+            {"name": "MINIBO~1.BGC", "display_name": "minibox.bgcode", "path": "/usb/MINIBO~1.BGC", "refs": {"thumbnail": "/thumb/l/usb/MINIBO~1.BGC"}}
+        ], "")), patch.object(self.plugin._client, "get_file_header", return_value=fake_header):
+            self.plugin._update_file_metadata("192.168.1.120", "test_api_key", "minibox.bgcode", {})
+
+        self.assertEqual(self.plugin._current_thumbnail_path, "/thumb/l/usb/MINIBO~1.BGC")
+        self.assertEqual(self.plugin._current_filament["type"], "PETG")
+        self.assertEqual(self.plugin._current_filament["weight_g"], 15.42)
+        self.assertEqual(self.plugin._current_filament["length_m"], 5.12)
+        self.assertEqual(self.plugin._current_filament["volume_cm3"], 12.14)
+        self.assertEqual(self.plugin._current_filament["cost"], 0.45)
+
+    def test_on_api_get_thumbnail(self):
+        self.plugin._current_thumbnail_path = "/thumb/l/usb/test.gco"
+        mock_request = MagicMock()
+        mock_request.args = {"thumbnail": "1"}
+
+        with patch.object(self.plugin._client, "get_thumbnail", return_value=b"\x89PNG\r\n\x1a\nfakeimage"):
+            resp = self.plugin.on_api_get(mock_request)
+            self.assertEqual(resp.mimetype, "image/png")
+            self.assertEqual(resp.data, b"\x89PNG\r\n\x1a\nfakeimage")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

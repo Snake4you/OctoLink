@@ -5,7 +5,7 @@ import logging
 import re
 import threading
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
@@ -165,6 +165,59 @@ class PrusaLinkClient:
 
         return False, f"Failed to execute '{cmd_lower}' on PrusaLink"
 
+    def get_files_list(self, ip: str, api_key: str, timeout: float = 4.0) -> Tuple[bool, List[Dict[str, Any]], str]:
+        """
+        Retrieves list of files on the printer storage (e.g. USB) from /api/v1/files/usb.
+        """
+        url = f"http://{ip}/api/v1/files/usb"
+        headers = self._build_headers(api_key)
+        try:
+            resp = requests.get(url, headers=headers, timeout=timeout)
+            if resp.status_code == 200:
+                data = resp.json()
+                children = data.get("children", []) if isinstance(data, dict) else []
+                return True, children, ""
+            return False, [], f"HTTP {resp.status_code}"
+        except Exception as e:
+            return False, [], str(e)
+
+    def get_thumbnail(self, ip: str, api_key: str, thumb_path: str, timeout: float = 5.0) -> Optional[bytes]:
+        """
+        Fetches thumbnail image binary data from PrusaLink (e.g. /thumb/l/usb/MUG-CU~4.BGC).
+        """
+        if not thumb_path:
+            return None
+        clean_path = thumb_path if thumb_path.startswith("/") else ("/" + thumb_path)
+        url = f"http://{ip}{clean_path}"
+        headers = self._build_headers(api_key)
+        try:
+            resp = requests.get(url, headers=headers, timeout=timeout)
+            if resp.status_code == 200 and resp.content and resp.content.startswith(b"\x89PNG"):
+                return resp.content
+            return None
+        except Exception as e:
+            self._logger.debug(f"Error fetching thumbnail from {url}: {e}")
+            return None
+
+    def get_file_header(self, ip: str, api_key: str, file_path: str, max_bytes: int = 32768, timeout: float = 4.0) -> bytes:
+        """
+        Streams first max_bytes of a file from PrusaLink (e.g. /usb/MINIBO~2.BGC) to inspect metadata.
+        """
+        clean_path = file_path if file_path.startswith("/") else ("/" + file_path)
+        url = f"http://{ip}{clean_path}"
+        headers = self._build_headers(api_key)
+        chunk = b""
+        try:
+            with requests.get(url, headers=headers, stream=True, timeout=timeout) as resp:
+                if resp.status_code == 200:
+                    for c in resp.iter_content(chunk_size=4096):
+                        chunk += c
+                        if len(chunk) >= max_bytes:
+                            break
+        except Exception as e:
+            self._logger.debug(f"Error streaming file header from {url}: {e}")
+        return chunk
+
 
 if octoprint:
     _PluginBases = (
@@ -246,6 +299,19 @@ class PrusaLinkBridgePlugin(*_PluginBases):
         # Z axis tracking
         self._current_axis_z = None
 
+        # Thumbnail and filament caching
+        self._files_cache = {}
+        self._last_files_poll_time = 0
+        self._thumbnail_cache = {}  # {path: (bytes, timestamp)}
+        self._current_thumbnail_path = None
+        self._current_filament = {
+            "type": None,
+            "weight_g": None,
+            "length_m": None,
+            "volume_cm3": None,
+            "cost": None,
+        }
+
         # Telemetry data dictionary for UI & API
         self._prusalink_info = {
             "online": False,
@@ -267,6 +333,13 @@ class PrusaLinkBridgePlugin(*_PluginBases):
             "time_remaining": None,
             "prusa_ip": None,
             "printer_name": "Prusa 3D Drucker",
+            "thumbnail_url": None,
+            "thumbnail_path": None,
+            "filament_type": None,
+            "filament_weight_g": None,
+            "filament_length_m": None,
+            "filament_volume_cm3": None,
+            "filament_cost": None,
         }
         self._prusa_model_name = "Prusa 3D Drucker"
 
@@ -377,6 +450,33 @@ class PrusaLinkBridgePlugin(*_PluginBases):
 
     def on_api_get(self, request):
         import flask
+        # Serve thumbnail image
+        if request.args.get("thumbnail"):
+            req_path = request.args.get("path") or self._current_thumbnail_path or self._prusalink_info.get("thumbnail_path")
+            if not req_path:
+                return flask.abort(404)
+            now = time.time()
+            if req_path in self._thumbnail_cache:
+                cached_data, cached_time = self._thumbnail_cache[req_path]
+                if now - cached_time < 3600:
+                    resp = flask.Response(cached_data, mimetype="image/png")
+                    resp.headers["Cache-Control"] = "public, max-age=3600"
+                    return resp
+
+            prusa_ip = (self._settings.get(["prusa_ip"]) if hasattr(self, "_settings") else "") or ""
+            prusa_api_key = (self._settings.get(["prusa_api_key"]) if hasattr(self, "_settings") else "") or ""
+            if not prusa_ip:
+                return flask.abort(404)
+
+            img_bytes = self._client.get_thumbnail(prusa_ip.strip(), prusa_api_key.strip(), req_path)
+            if not img_bytes:
+                return flask.abort(404)
+
+            self._thumbnail_cache[req_path] = (img_bytes, now)
+            resp = flask.Response(img_bytes, mimetype="image/png")
+            resp.headers["Cache-Control"] = "public, max-age=3600"
+            return resp
+
         info = dict(getattr(self, "_prusalink_info", {}))
         return flask.jsonify(info)
 
@@ -543,12 +643,24 @@ class PrusaLinkBridgePlugin(*_PluginBases):
             if info_ok and isinstance(info_resp, dict):
                 self._prusa_model_name = info_resp.get("name") or info_resp.get("hostname") or "Prusa MK3.5S"
 
+        # Determine current or target file name
+        target_filename = None
+        if isinstance(job_data, dict) and "file" in job_data:
+            f_info = job_data.get("file", {})
+            if isinstance(f_info, dict):
+                target_filename = f_info.get("display_name") or f_info.get("name")
+        if not target_filename:
+            target_filename = self._current_job_file
+
+        self._update_file_metadata(ip, api_key, target_filename, job_data, state_str)
+
         # Synchronize into OctoPrint
         self._sync_to_octoprint(state_str, job_data, telemetry_dict)
 
         # Update telemetry data dictionary for UI and API
         is_printing = (state_str == "PRINTING")
         is_paused = (state_str == "PAUSED")
+        thumb_url = f"/api/plugin/prusalink_bridge?thumbnail=1&t={self._current_job_id or int(time.time())}" if self._current_thumbnail_path else None
         self._prusalink_info = {
             "online": True,
             "state": state_str,
@@ -563,18 +675,151 @@ class PrusaLinkBridgePlugin(*_PluginBases):
             "speed": speed,
             "fan_hotend": fan_hotend,
             "fan_print": fan_print,
-            "job_file": self._current_job_file if (is_printing or is_paused) else None,
+            "job_file": self._current_job_file,
             "progress": self._current_progress if (is_printing or is_paused) else None,
             "time_printing": self._current_time_printing if (is_printing or is_paused) else None,
             "time_remaining": self._current_time_remaining if (is_printing or is_paused) else None,
             "prusa_ip": ip,
             "printer_name": getattr(self, "_prusa_model_name", "Prusa 3D Drucker"),
+            "thumbnail_url": thumb_url,
+            "thumbnail_path": self._current_thumbnail_path,
+            "filament_type": self._current_filament.get("type"),
+            "filament_weight_g": self._current_filament.get("weight_g"),
+            "filament_length_m": self._current_filament.get("length_m"),
+            "filament_volume_cm3": self._current_filament.get("volume_cm3"),
+            "filament_cost": self._current_filament.get("cost"),
         }
         if hasattr(self, "_plugin_manager") and self._plugin_manager is not None:
             try:
                 self._plugin_manager.send_plugin_message(self._identifier, self._prusalink_info)
             except Exception as e:
                 self._logger.debug(f"Error sending plugin message: {e}")
+
+    def _update_file_metadata(self, ip: str, api_key: str, filename: Optional[str], job_data: Dict[str, Any], state_str: str = ""):
+        """
+        Updates thumbnail path and filament usage for the active or finished job file.
+        """
+        now = time.time()
+        # Refresh files list cache if empty or every 60s
+        if not self._files_cache or (now - self._last_files_poll_time > 60):
+            ok, children, _ = self._client.get_files_list(ip, api_key)
+            if ok:
+                new_cache = {}
+                for c in children:
+                    name_83 = c.get("name")
+                    disp_name = c.get("display_name") or name_83
+                    entry = {
+                        "name": name_83,
+                        "display_name": disp_name,
+                        "thumbnail": c.get("refs", {}).get("thumbnail") or f"/thumb/l/usb/{name_83}",
+                        "download": c.get("refs", {}).get("download") or f"/usb/{name_83}",
+                        "size": c.get("size"),
+                        "m_timestamp": c.get("m_timestamp") or 0,
+                    }
+                    if name_83:
+                        new_cache[name_83.lower()] = entry
+                    if disp_name:
+                        new_cache[disp_name.lower()] = entry
+                self._files_cache = new_cache
+                self._last_files_poll_time = now
+
+        if not filename and state_str in ("FINISHED", "IDLE", "READY", "STOPPED"):
+            if self._files_cache:
+                latest_entry = max(self._files_cache.values(), key=lambda x: x.get("m_timestamp", 0), default=None)
+                if latest_entry:
+                    filename = latest_entry.get("display_name") or latest_entry.get("name")
+                    self._current_job_file = filename
+
+        if not filename:
+            return
+
+
+        file_entry = self._files_cache.get(filename.lower())
+        short_name = file_entry.get("name") if file_entry else None
+        thumb_path = file_entry.get("thumbnail") if file_entry else None
+        if not thumb_path and short_name:
+            thumb_path = f"/thumb/l/usb/{short_name}"
+
+        # If file_entry wasn't in cache, try finding by prefix or containment
+        if not thumb_path:
+            for k, v in self._files_cache.items():
+                if filename.lower() in k or k in filename.lower():
+                    thumb_path = v.get("thumbnail")
+                    short_name = v.get("name")
+                    break
+
+        if thumb_path:
+            self._current_thumbnail_path = thumb_path
+
+        # Filament detection
+        fil_type = self._current_filament.get("type")
+        fil_weight = self._current_filament.get("weight_g")
+        fil_vol = self._current_filament.get("volume_cm3")
+        fil_len = self._current_filament.get("length_mm")
+        fil_cost = self._current_filament.get("cost")
+
+        # 1. From job_data if provided by PrusaLink
+        job_fil = job_data.get("filament") if isinstance(job_data, dict) else None
+        if isinstance(job_fil, dict):
+            if job_fil.get("length") is not None:
+                fil_len = job_fil.get("length")
+            if job_fil.get("volume") is not None:
+                fil_vol = job_fil.get("volume")
+            if job_fil.get("weight") is not None:
+                fil_weight = job_fil.get("weight")
+            if job_fil.get("type"):
+                fil_type = job_fil.get("type")
+        elif isinstance(job_fil, str):
+            fil_type = job_fil
+
+        # 2. If .bgcode file, read header directly
+        is_bgcode = filename.lower().endswith(".bgcode") or (short_name and short_name.lower().endswith(".bgc"))
+        if is_bgcode and short_name and (fil_weight is None or fil_len is None):
+            try:
+                chunk = self._client.get_file_header(ip, api_key, f"/usb/{short_name}", max_bytes=32768)
+                if chunk:
+                    text = chunk.decode("latin1", errors="ignore")
+                    m_type = re.search(r"filament_type\s*=\s*([^\r\n;]+)", text)
+                    if m_type and not fil_type:
+                        fil_type = m_type.group(1).strip()
+
+                    m_g = re.search(r"filament used \[g\]\s*=\s*([0-9.]+)", text)
+                    if m_g and fil_weight is None:
+                        fil_weight = float(m_g.group(1))
+
+                    m_cm3 = re.search(r"filament used \[cm3\]\s*=\s*([0-9.]+)", text)
+                    if m_cm3 and fil_vol is None:
+                        fil_vol = float(m_cm3.group(1))
+
+                    m_mm = re.search(r"filament used \[mm\]\s*=\s*([0-9.]+)", text)
+                    if m_mm and fil_len is None:
+                        fil_len = float(m_mm.group(1))
+
+                    m_cost = re.search(r"filament cost\s*=\s*([0-9.]+)", text)
+                    if m_cost and fil_cost is None:
+                        fil_cost = float(m_cost.group(1))
+
+            except Exception as e:
+                self._logger.debug(f"Error parsing bgcode header: {e}")
+
+        # 3. Filename regex fallback for filament material
+        if not fil_type and filename:
+            m_mat = re.search(r"[._-](PLA|PETG|ABS|ASA|FLEX|TPU|PC|PVB|PA|PET|HIPS|CPE|PC-BLEND)[._-]", filename, re.IGNORECASE)
+            if m_mat:
+                fil_type = m_mat.group(1).upper()
+
+        fil_length_m = round(fil_len / 1000.0, 2) if fil_len is not None else None
+        fil_vol_cm3 = round(fil_vol, 2) if fil_vol is not None else None
+        fil_weight_g = round(fil_weight, 2) if fil_weight is not None else None
+
+        self._current_filament = {
+            "type": fil_type,
+            "weight_g": fil_weight_g,
+            "length_m": fil_length_m,
+            "length_mm": fil_len,
+            "volume_cm3": fil_vol_cm3,
+            "cost": fil_cost,
+        }
 
     def _handle_disconnected(self):
         was_online = self._prusalink_online
@@ -600,12 +845,19 @@ class PrusaLinkBridgePlugin(*_PluginBases):
             "speed": None,
             "fan_hotend": None,
             "fan_print": None,
-            "job_file": None,
+            "job_file": self._current_job_file,
             "progress": None,
             "time_printing": None,
             "time_remaining": None,
             "prusa_ip": None,
             "printer_name": getattr(self, "_prusa_model_name", "Prusa 3D Drucker"),
+            "thumbnail_url": None,
+            "thumbnail_path": None,
+            "filament_type": None,
+            "filament_weight_g": None,
+            "filament_length_m": None,
+            "filament_volume_cm3": None,
+            "filament_cost": None,
         }
         if hasattr(self, "_plugin_manager") and self._plugin_manager is not None:
             try:
@@ -678,6 +930,8 @@ class PrusaLinkBridgePlugin(*_PluginBases):
                     state_monitor.set_state(state_dict)
 
                     estimated_time = (time_printing + time_remaining) if time_remaining is not None else None
+                    fil_len_mm = self._current_filament.get("length_mm")
+                    fil_vol_cm3 = self._current_filament.get("volume_cm3")
                     job_dict = dict_cls(
                         file=dict_cls(
                             name=filename,
@@ -688,7 +942,7 @@ class PrusaLinkBridgePlugin(*_PluginBases):
                         ),
                         estimatedPrintTime=estimated_time,
                         lastPrintTime=None,
-                        filament=dict_cls(length=None, volume=None),
+                        filament=dict_cls(length=fil_len_mm, volume=fil_vol_cm3),
                         user="PrusaLink",
                     )
                     state_monitor.set_job_data(job_dict)
